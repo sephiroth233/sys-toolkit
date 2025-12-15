@@ -1810,33 +1810,37 @@ show_menu() {
         echo "10. 添加中转配置"
         echo "11. 查看中转配置"
         echo "12. 删除中转配置"
-        echo ""
-        echo -e "${PURPLE}=== Snell 代理管理 ===${RESET}"
-        echo "13. 安装 Snell 服务"
-        echo "14. 卸载 Snell 服务"
-        if [ ${snell_installed} -eq 0 ]; then
-            echo "15. 生成 Snell 配置"
-            echo "16. 删除 Snell 配置"
-            if [ ${snell_running} -eq 0 ]; then
-                echo "17. 停止 Snell 服务"
-            else
-                echo "17. 启动 Snell 服务"
-            fi
-            echo "18. 重启 Snell 服务"
-            echo "19. 查看 Snell 状态"
-            echo "20. 查看 Snell 配置"
-        fi
-        echo ""
-        echo -e "${PURPLE}=== BBR 优化管理 ===${RESET}"
-        if [ ${bbr_status} -eq 0 ]; then
-            echo "21. 关闭 BBR"
-        else
-            echo "21. 启用 BBR"
-        fi
-        echo ""
-        echo -e "${PURPLE}=== 配置管理 ===${RESET}"
-        echo "22. 查看配置来源信息"
     fi
+
+    echo ""
+    echo -e "${PURPLE}=== Snell 代理管理 ===${RESET}"
+    echo "13. 安装 Snell 服务"
+    echo "14. 卸载 Snell 服务"
+    if [ ${snell_installed} -eq 0 ]; then
+        echo "15. 生成 Snell 配置"
+        echo "16. 删除 Snell 配置"
+        if [ ${snell_running} -eq 0 ]; then
+            echo "17. 停止 Snell 服务"
+        else
+            echo "17. 启动 Snell 服务"
+        fi
+        echo "18. 重启 Snell 服务"
+        echo "19. 查看 Snell 状态"
+        echo "20. 查看 Snell 配置"
+    fi
+
+    echo ""
+    echo -e "${PURPLE}=== BBR 优化管理 ===${RESET}"
+    if [ ${bbr_status} -eq 0 ]; then
+        echo "21. 关闭 BBR"
+    else
+        echo "21. 启用 BBR"
+    fi
+
+    echo ""
+    echo -e "${PURPLE}=== 配置管理 ===${RESET}"
+    echo "22. 查看配置来源信息"
+
     echo "0. 退出"
     echo -e "${GREEN}=========================${RESET}"
     read -p "请输入选项编号: " choice
