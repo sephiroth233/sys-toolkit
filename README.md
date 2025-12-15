@@ -1,9 +1,3 @@
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-**项目名称**: sys-toolkit
-
 ## 项目概述
 
 这是一个系统管理和网络工具脚本集合仓库，包含Windows批处理脚本和Linux Shell脚本，主要用于：
@@ -99,12 +93,3 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     - 安装脚本需要访问GitHub API下载最新版本
     - 代理相关脚本需要网络连接
 
-## 开发说明
-
-此仓库为脚本集合，不包含传统的构建、测试流程。脚本直接执行，无需编译。
-
-当修改脚本时：
-1. 保持跨平台兼容性考虑
-2. 添加适当的错误处理和用户提示
-3. 使用一致的代码风格和注释
-4. 测试在不同环境下的执行效果
