@@ -300,10 +300,6 @@ install_snell() {
     rm snell-server.zip
     chmod +x /usr/local/bin/snell-server
 
-    # 生成随机端口和密钥
-    local SNELL_PORT=$(generate_unused_port)
-    local SNELL_PSK=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 20)
-
     # 创建 Snell 用户
     if ! id "snell" &>/dev/null; then
         useradd -r -s /usr/sbin/nologin snell
@@ -311,14 +307,6 @@ install_snell() {
 
     # 创建配置目录
     mkdir -p "${SNELL_CONFIG_DIR}"
-
-    # 生成 Snell 配置文件
-    cat > "${SNELL_CONFIG_FILE}" << EOF
-[snell-server]
-listen = ::0:${SNELL_PORT}
-psk = ${SNELL_PSK}
-ipv6 = true
-EOF
 
     # 生成 systemd 服务文件
     cat > /etc/systemd/system/snell.service << EOF
@@ -343,26 +331,88 @@ SyslogIdentifier=snell-server
 WantedBy=multi-user.target
 EOF
 
+    # 启用服务（但不启动，因为还没有配置）
+    systemctl daemon-reload
+    systemctl enable "${SNELL_SERVICE_NAME}"
+
+    echo -e "${GREEN}Snell 安装成功！${RESET}"
+    echo -e "${YELLOW}提示：Snell 已安装但未配置，请使用菜单选项生成配置。${RESET}"
+}
+
+# 生成 Snell 配置
+generate_snell_config() {
+    echo -e "${CYAN}=== 生成 Snell 配置 ===${RESET}"
+
+    # 检查 Snell 是否已安装
+    if ! is_snell_installed; then
+        echo -e "${RED}Snell 尚未安装，请先安装！${RESET}"
+        return 1
+    fi
+
+    # 检查是否已有配置
+    if [ -f "${SNELL_CONFIG_FILE}" ]; then
+        echo -e "${YELLOW}Snell 配置已存在，是否重新生成？${RESET}"
+        read -p "$(echo -e "${RED}重新生成将覆盖现有配置！(y/N) ${RESET}")" confirm
+        confirm=${confirm:-N}
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            echo -e "${YELLOW}已取消操作${RESET}"
+            return 0
+        fi
+    fi
+
+    # 获取或生成端口
+    local port
+    while true; do
+        read -r -p "请输入 Snell 端口 (直接回车使用随机端口): " port
+        # 如果用户直接回车，使用随机端口
+        if [ -z "$port" ]; then
+            port=$(generate_unused_port)
+            echo -e "${CYAN}使用随机端口: ${port}${RESET}"
+            break
+        fi
+        # 验证端口格式
+        if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1025 ] || [ "$port" -gt 65535 ]; then
+            echo -e "${RED}端口必须是 1025-65535 之间的数字！${RESET}"
+            continue
+        fi
+        # 检查端口是否可用
+        if ! is_port_available "$port"; then
+            echo -e "${RED}端口 $port 已被占用，请选择其他端口！${RESET}"
+            continue
+        fi
+        break
+    done
+
+    # 生成随机密钥
+    local psk=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 20)
+
     # 获取本机 IP 和国家
-    local HOST_IP=$(curl -s http://checkip.amazonaws.com)
-    local IP_COUNTRY=$(curl -s http://ipinfo.io/${HOST_IP}/country)
+    local host_ip=$(curl -s http://checkip.amazonaws.com)
+    local ip_country=$(curl -s http://ipinfo.io/${host_ip}/country)
+
+    # 生成 Snell 配置文件
+    cat > "${SNELL_CONFIG_FILE}" << EOF
+[snell-server]
+listen = ::0:${port}
+psk = ${psk}
+ipv6 = true
+EOF
 
     # 保存安装参数
     cat > "${SNELL_INSTALL_PARAMS_FILE}" << EOF
-snell_port=${SNELL_PORT}
-snell_psk=${SNELL_PSK}
-host_ip=${HOST_IP}
-ip_country=${IP_COUNTRY}
+snell_port=${port}
+snell_psk=${psk}
+host_ip=${host_ip}
+ip_country=${ip_country}
 EOF
 
     # 生成客户端配置
     cat > "${SNELL_CONFIG_DIR}/config.txt" << EOF
-${IP_COUNTRY}-snell = snell, ${HOST_IP}, ${SNELL_PORT}, psk = ${SNELL_PSK}, version = 5, reuse = true
+${ip_country}-snell = snell, ${host_ip}, ${port}, psk = ${psk}, version = 5, reuse = true
 EOF
 
-    # 启用并启动服务
-    systemctl daemon-reload
-    systemctl enable "${SNELL_SERVICE_NAME}"
+    # 启动服务
+    echo -e "${YELLOW}正在启动 Snell 服务...${RESET}"
     systemctl start "${SNELL_SERVICE_NAME}"
 
     # 检查服务状态
@@ -372,15 +422,51 @@ EOF
         return 1
     fi
 
-    echo -e "${GREEN}Snell 安装成功！${RESET}"
+    echo -e "${GREEN}Snell 配置生成成功！${RESET}"
     echo -e "${CYAN}Snell 配置信息：${RESET}"
     cat "${SNELL_CONFIG_DIR}/config.txt"
 
     # 保存到 sing-box 安装参数中（可选）
     if [ -f "${INSTALL_PARAMS_FILE}" ]; then
-        echo "snell_port=${SNELL_PORT}" >> "${INSTALL_PARAMS_FILE}"
-        echo "snell_psk=${SNELL_PSK}" >> "${INSTALL_PARAMS_FILE}"
+        echo "snell_port=${port}" >> "${INSTALL_PARAMS_FILE}"
+        echo "snell_psk=${psk}" >> "${INSTALL_PARAMS_FILE}"
     fi
+}
+
+# 删除 Snell 配置
+delete_snell_config() {
+    echo -e "${CYAN}=== 删除 Snell 配置 ===${RESET}"
+
+    # 检查 Snell 是否已安装
+    if ! is_snell_installed; then
+        echo -e "${RED}Snell 尚未安装！${RESET}"
+        return 1
+    fi
+
+    # 检查是否有配置
+    if [ ! -f "${SNELL_CONFIG_FILE}" ]; then
+        echo -e "${YELLOW}Snell 配置不存在！${RESET}"
+        return 0
+    fi
+
+    read -r -p "$(echo -e "${RED}确定要删除 Snell 配置吗？这将停止服务并删除配置文件。(y/N) ${RESET}")" confirm
+    confirm=${confirm:-N}
+
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}已取消操作${RESET}"
+        return 0
+    fi
+
+    # 停止服务
+    systemctl stop "${SNELL_SERVICE_NAME}" 2>/dev/null
+
+    # 删除配置文件
+    rm -f "${SNELL_CONFIG_FILE}"
+    rm -f "${SNELL_INSTALL_PARAMS_FILE}"
+    rm -f "${SNELL_CONFIG_DIR}/config.txt"
+
+    echo -e "${GREEN}Snell 配置已删除！${RESET}"
+    echo -e "${YELLOW}提示：Snell 服务已停止，但程序文件仍保留。如需重新配置，请使用菜单选项生成配置。${RESET}"
 }
 
 uninstall_sing_box() {
@@ -1605,13 +1691,20 @@ show_menu() {
     is_sing_box_running
     sing_box_running=$?
 
+    is_snell_installed
+    snell_installed=$?
+    is_snell_running
+    snell_running=$?
+
     # 检查 BBR 状态
     check_bbr_status
     bbr_status=$?
 
     echo -e "${GREEN}=== sing-box 管理工具 ===${RESET}"
-    echo -e "安装状态: $(if [ ${sing_box_installed} -eq 0 ]; then echo -e "${GREEN}已安装${RESET}"; else echo -e "${RED}未安装${RESET}"; fi)"
-    echo -e "运行状态: $(if [ ${sing_box_running} -eq 0 ]; then echo -e "${GREEN}已运行${RESET}"; else echo -e "${RED}未运行${RESET}"; fi)"
+    echo -e "Sing-box 安装状态: $(if [ ${sing_box_installed} -eq 0 ]; then echo -e "${GREEN}已安装${RESET}"; else echo -e "${RED}未安装${RESET}"; fi)"
+    echo -e "Sing-box 运行状态: $(if [ ${sing_box_running} -eq 0 ]; then echo -e "${GREEN}已运行${RESET}"; else echo -e "${RED}未运行${RESET}"; fi)"
+    echo -e "Snell 安装状态: $(if [ ${snell_installed} -eq 0 ]; then echo -e "${GREEN}已安装${RESET}"; else echo -e "${RED}未安装${RESET}"; fi)"
+    echo -e "Snell 运行状态: $(if [ ${snell_running} -eq 0 ]; then echo -e "${GREEN}已运行${RESET}"; else echo -e "${RED}未运行${RESET}"; fi)"
     echo -e "BBR 状态: $(if [ ${bbr_status} -eq 0 ]; then echo -e "${GREEN}已启用${RESET}"; else echo -e "${RED}未启用${RESET}"; fi)"
     echo ""
     echo "1. 安装 sing-box 服务"
@@ -1637,22 +1730,24 @@ show_menu() {
         echo -e "${PURPLE}=== Snell 代理管理 ===${RESET}"
         echo "13. 安装 Snell 服务"
         echo "14. 卸载 Snell 服务"
-        if is_snell_installed; then
-            if is_snell_running; then
-                echo "15. 停止 Snell 服务"
+        if [ ${snell_installed} -eq 0 ]; then
+            echo "15. 生成 Snell 配置"
+            echo "16. 删除 Snell 配置"
+            if [ ${snell_running} -eq 0 ]; then
+                echo "17. 停止 Snell 服务"
             else
-                echo "15. 启动 Snell 服务"
+                echo "17. 启动 Snell 服务"
             fi
-            echo "16. 重启 Snell 服务"
-            echo "17. 查看 Snell 状态"
-            echo "18. 查看 Snell 配置"
+            echo "18. 重启 Snell 服务"
+            echo "19. 查看 Snell 状态"
+            echo "20. 查看 Snell 配置"
         fi
         echo ""
         echo -e "${PURPLE}=== BBR 优化管理 ===${RESET}"
         if [ ${bbr_status} -eq 0 ]; then
-            echo "19. 关闭 BBR"
+            echo "21. 关闭 BBR"
         else
-            echo "19. 启用 BBR"
+            echo "21. 启用 BBR"
         fi
     fi
     echo "0. 退出"
@@ -1759,22 +1854,36 @@ while true; do
             fi
             ;;
         13)
-            if is_snell_installed; then
+            if [ ${snell_installed} -eq 0 ]; then
                 echo -e "${YELLOW}Snell 已经安装！${RESET}"
             else
                 install_snell
             fi
             ;;
         14)
-            if is_snell_installed; then
+            if [ ${snell_installed} -eq 0 ]; then
                 uninstall_snell
             else
                 echo -e "${YELLOW}Snell 尚未安装！${RESET}"
             fi
             ;;
         15)
-            if is_snell_installed; then
-                if is_snell_running; then
+            if [ ${snell_installed} -eq 0 ]; then
+                generate_snell_config
+            else
+                echo -e "${RED}Snell 尚未安装！${RESET}"
+            fi
+            ;;
+        16)
+            if [ ${snell_installed} -eq 0 ]; then
+                delete_snell_config
+            else
+                echo -e "${RED}Snell 尚未安装！${RESET}"
+            fi
+            ;;
+        17)
+            if [ ${snell_installed} -eq 0 ]; then
+                if [ ${snell_running} -eq 0 ]; then
                     stop_snell
                 else
                     start_snell
@@ -1783,22 +1892,22 @@ while true; do
                 echo -e "${RED}Snell 尚未安装！${RESET}"
             fi
             ;;
-        16)
-            if is_snell_installed; then
+        18)
+            if [ ${snell_installed} -eq 0 ]; then
                 restart_snell
             else
                 echo -e "${RED}Snell 尚未安装！${RESET}"
             fi
             ;;
-        17)
-            if is_snell_installed; then
+        19)
+            if [ ${snell_installed} -eq 0 ]; then
                 status_snell
             else
                 echo -e "${RED}Snell 尚未安装！${RESET}"
             fi
             ;;
-        18)
-            if is_snell_installed; then
+        20)
+            if [ ${snell_installed} -eq 0 ]; then
                 if [ -f "${SNELL_CONFIG_DIR}/config.txt" ]; then
                     echo -e "${CYAN}=== Snell 配置信息 ===${RESET}"
                     cat "${SNELL_CONFIG_DIR}/config.txt"
@@ -1809,7 +1918,7 @@ while true; do
                 echo -e "${RED}Snell 尚未安装！${RESET}"
             fi
             ;;
-        19)
+        21)
             check_bbr_status
             if [ $? -eq 0 ]; then
                 disable_bbr
