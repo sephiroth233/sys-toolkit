@@ -13,14 +13,12 @@ RESET='\033[0m'
 CONFIG_DIR="/etc/sing-box"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
 SERVICE_NAME="sing-box"
-INSTALL_PARAMS_FILE="${CONFIG_DIR}/install_params.conf"
 DIRECT_CONFIG_FILE="${CONFIG_DIR}/direct_configs.conf"
 
 # Snell 相关常量
 SNELL_CONFIG_DIR="/etc/snell"
 SNELL_CONFIG_FILE="${SNELL_CONFIG_DIR}/snell-server.conf"
 SNELL_SERVICE_NAME="snell"
-SNELL_INSTALL_PARAMS_FILE="${SNELL_CONFIG_DIR}/install_params.conf"
 
 # 检查 root 权限
 check_root() {
@@ -159,7 +157,6 @@ install_sing_box() {
 
     # 生成随机端口和密码
     check_ss_command
-    is_port_available
     vless_port=$(generate_unused_port)
     hysteria_port=$(generate_unused_port)
     anytls_port=$(generate_unused_port)
@@ -189,23 +186,7 @@ install_sing_box() {
     host_ip=$(curl -s http://checkip.amazonaws.com)
     ip_country=$(curl -s http://ipinfo.io/${host_ip}/country)
 
-    # 保存安装参数到文件（可选，用于向后兼容）
-    # 注意：新版本建议直接从 config.json 读取配置
-    cat > "${INSTALL_PARAMS_FILE}" << EOF
-vless_port=${vless_port}
-hysteria_port=${hysteria_port}
-anytls_port=${anytls_port}
-shadowtls_port=${shadowtls_port}
-shadowsocks_port=${shadowsocks_port}
-ss_password=${ss_password}
-password=${password}
-uuid=${uuid}
-private_key=${private_key}
-public_key=${public_key}
-host_ip=${host_ip}
-ip_country=${ip_country}
-EOF
-    echo -e "${YELLOW}注意：install_params.conf 已创建（向后兼容），新版本建议直接从 config.json 读取配置${RESET}"
+    # 参数直接从 config.json 读取
 
     # 生成最小配置文件（初次安装不包含节点信息）
     cat > "${CONFIG_FILE}" << EOF
@@ -400,15 +381,7 @@ psk = ${psk}
 ipv6 = true
 EOF
 
-    # 保存安装参数（可选，用于向后兼容）
-    # 注意：新版本建议直接从 snell-server.conf 读取配置
-    cat > "${SNELL_INSTALL_PARAMS_FILE}" << EOF
-snell_port=${port}
-snell_psk=${psk}
-host_ip=${host_ip}
-ip_country=${ip_country}
-EOF
-    echo -e "${YELLOW}注意：Snell install_params.conf 已创建（向后兼容），新版本建议直接从 snell-server.conf 读取配置${RESET}"
+    # 参数直接从 snell-server.conf 读取
 
     # 生成客户端配置
     cat > "${SNELL_CONFIG_DIR}/config.txt" << EOF
@@ -430,7 +403,7 @@ EOF
     echo -e "${CYAN}Snell 配置信息：${RESET}"
     cat "${SNELL_CONFIG_DIR}/config.txt"
 
-    # 不再保存到 install_params.conf，配置信息已保存在 snell-server.conf 中
+    # 配置信息已保存在 snell-server.conf 中
 }
 
 # 删除 Snell 配置
@@ -462,7 +435,6 @@ delete_snell_config() {
 
     # 删除配置文件
     rm -f "${SNELL_CONFIG_FILE}"
-    rm -f "${SNELL_INSTALL_PARAMS_FILE}"
     rm -f "${SNELL_CONFIG_DIR}/config.txt"
 
     echo -e "${GREEN}Snell 配置已删除！${RESET}"
@@ -1108,18 +1080,7 @@ show_config_source_info() {
         echo -e "${YELLOW}○ Snell 配置文件不存在${RESET}"
     fi
 
-    # install_params.conf 文件（向后兼容）
-    if [ -f "${INSTALL_PARAMS_FILE}" ]; then
-        echo -e "${YELLOW}⚠ install_params.conf 存在（向后兼容）${RESET}"
-        echo -e "  路径: ${INSTALL_PARAMS_FILE}"
-        echo -e "  注意: 新版本建议直接从配置文件读取，此文件可安全删除"
-    fi
-
-    if [ -f "${SNELL_INSTALL_PARAMS_FILE}" ]; then
-        echo -e "${YELLOW}⚠ Snell install_params.conf 存在（向后兼容）${RESET}"
-        echo -e "  路径: ${SNELL_INSTALL_PARAMS_FILE}"
-        echo -e "  注意: 新版本建议直接从 snell-server.conf 读取，此文件可安全删除"
-    fi
+    # 所有配置直接从配置文件读取
 
     echo ""
 }
@@ -1131,21 +1092,82 @@ parse_config_from_json() {
         return 1
     fi
 
-    # 检查是否有 inbounds 配置
-    local inbounds_count=$(jq '.inbounds | length' "${CONFIG_FILE}" 2>/dev/null)
-    if [ -z "$inbounds_count" ] || [ "$inbounds_count" -eq 0 ]; then
-        echo -e "${YELLOW}配置文件中没有找到任何入站配置，请先生成节点配置！${RESET}"
-        return 1
-    fi
-
     # 获取本机 IP 和国家
     host_ip=$(curl -s http://checkip.amazonaws.com)
     ip_country=$(curl -s http://ipinfo.io/${host_ip}/country)
 
-    # 尝试从 install_params.conf 读取（向后兼容）
-    if [ -f "${INSTALL_PARAMS_FILE}" ]; then
-        source "${INSTALL_PARAMS_FILE}"
-        echo -e "${YELLOW}注意：使用 install_params.conf 中的参数（旧版本兼容）${RESET}"
+    # 检查是否有 inbounds 配置
+    local inbounds_count=$(jq '.inbounds | length' "${CONFIG_FILE}" 2>/dev/null)
+    if [ -z "$inbounds_count" ] || [ "$inbounds_count" -eq 0 ]; then
+        # 初次安装时没有 inbounds，这是正常情况
+        # 生成新的随机参数用于节点配置
+        echo -e "${YELLOW}初次安装检测：生成新的随机参数用于节点配置${RESET}"
+
+        # 生成随机端口和密码
+        check_ss_command
+        vless_port=$(generate_unused_port)
+        hysteria_port=$(generate_unused_port)
+        anytls_port=$(generate_unused_port)
+        shadowtls_port=$(generate_unused_port)
+        shadowsocks_port=$(generate_unused_port)
+        ss_password=$(sing-box generate rand 16 --base64 2>/dev/null || tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
+        password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
+
+        # 生成 UUID 和 Reality 密钥对
+        uuid=$(sing-box generate uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
+        reality_output=$(sing-box generate reality-keypair 2>/dev/null)
+        if [ -n "$reality_output" ]; then
+            private_key=$(echo "${reality_output}" | grep -oP 'PrivateKey:\s*\K.*')
+            public_key=$(echo "${reality_output}" | grep -oP 'PublicKey:\s*\K.*')
+        else
+            # 如果 sing-box 命令不可用，生成随机字符串
+            private_key=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
+            public_key=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
+        fi
+
+        return 0
+    else
+        # 从现有配置中提取参数
+        extract_protocol_from_config "hysteria2"
+        extract_protocol_from_config "shadowsocks"
+        extract_protocol_from_config "vless"
+        extract_protocol_from_config "anytls"
+
+        # 如果某些参数未设置，使用默认值
+        if [ -z "$vless_port" ]; then
+            vless_port=$(generate_unused_port)
+        fi
+        if [ -z "$hysteria_port" ]; then
+            hysteria_port=$(generate_unused_port)
+        fi
+        if [ -z "$anytls_port" ]; then
+            anytls_port=$(generate_unused_port)
+        fi
+        if [ -z "$shadowtls_port" ]; then
+            shadowtls_port=$(generate_unused_port)
+        fi
+        if [ -z "$shadowsocks_port" ]; then
+            shadowsocks_port=$(generate_unused_port)
+        fi
+        if [ -z "$ss_password" ]; then
+            ss_password=$(sing-box generate rand 16 --base64 2>/dev/null || tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
+        fi
+        if [ -z "$password" ]; then
+            password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
+        fi
+        if [ -z "$uuid" ]; then
+            uuid=$(sing-box generate uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
+        fi
+        if [ -z "$private_key" ] || [ -z "$public_key" ]; then
+            reality_output=$(sing-box generate reality-keypair 2>/dev/null)
+            if [ -n "$reality_output" ]; then
+                private_key=$(echo "${reality_output}" | grep -oP 'PrivateKey:\s*\K.*')
+                public_key=$(echo "${reality_output}" | grep -oP 'PublicKey:\s*\K.*')
+            else
+                private_key=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
+                public_key=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
+            fi
+        fi
     fi
 
     return 0
