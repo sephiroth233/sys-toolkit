@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 项目概述
 
 这是一个系统管理和网络工具脚本集合仓库，包含Windows批处理脚本和Linux Shell脚本，主要用于：
-- 网络代理配置和管理（Sing-box, Mihomo/Clash）
+- 网络代理配置和管理（Sing-box, Mihomo/Clash, Snell）
 - 开发环境设置（JDK, Docker, WSL）
 - 软件工具重置和清理（Navicat）
 
@@ -22,6 +22,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `sing-box.sh` - Sing-box代理服务安装和管理脚本
 - `mihomo-install.sh` - Mihomo（原Clash.Meta）安装和更新脚本
 - `wsl-docker-setup.sh` - WSL Ubuntu + Docker一键配置脚本
+- `Snell.sh` - Snell代理服务安装和管理脚本
 
 ## 脚本使用说明
 
@@ -40,7 +41,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
    ./mihomo-install.sh version
    ```
 
-3. **Clash控制器** (`blash.cmd`):
+3. **Snell** (`Snell.sh`):
+   ```bash
+   # 安装和管理Snell代理服务
+   sudo ./Snell.sh
+   ```
+
+4. **Clash控制器** (`blash.cmd`):
    ```cmd
    # Windows下运行
    blash.cmd
@@ -65,6 +72,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
    # 重置Navicat Premium试用期
    navicat-reset.cmd
    ```
+
+## 脚本架构和设计模式
+
+### 共同特点
+所有脚本都遵循以下设计原则：
+1. **彩色输出**：使用ANSI颜色代码提供直观的状态反馈
+2. **错误处理**：包含适当的错误检查和退出机制
+3. **用户交互**：提供清晰的菜单和操作提示
+4. **权限检查**：Linux脚本检查root权限，Windows脚本提示管理员权限
+
+### Linux脚本架构模式
+1. **模块化函数**：脚本按功能拆分为独立函数（如`check_root()`, `install_*()`, `update_*()`）
+2. **系统检测**：自动检测Linux发行版（Debian/Ubuntu vs CentOS/RHEL）并适配包管理器
+3. **服务管理**：使用systemd管理服务，包含启动、停止、状态检查
+4. **临时文件清理**：使用`trap`命令确保临时文件被正确清理
+5. **版本管理**：从GitHub API获取最新版本，支持安装、更新、卸载
+
+### Windows脚本架构模式
+1. **编码设置**：使用`chcp 65001`支持UTF-8输出
+2. **变量处理**：使用`setlocal enabledelayedexpansion`处理延迟扩展
+3. **配置管理**：通过变量控制功能开关（如`enableshortcut`, `verifyconf`）
+4. **注册表操作**：修改Windows注册表和环境变量
+
+### 网络代理脚本特定模式
+1. **自动配置生成**：随机生成端口和密钥
+2. **系统集成**：创建专用用户和systemd服务文件
+3. **配置导出**：生成可直接使用的配置信息
+4. **状态检查**：检查服务运行状态和版本信息
 
 ## 脚本特点
 
@@ -98,6 +133,43 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 4. **网络要求**:
    - 安装脚本需要访问GitHub API下载最新版本
    - 代理相关脚本需要网络连接
+
+## 开发命令和测试
+
+### 脚本验证
+由于这是脚本集合项目，没有传统的构建流程。开发时主要关注：
+
+1. **语法检查**：
+   ```bash
+   # 检查Shell脚本语法
+   bash -n script.sh
+
+   # 使用shellcheck进行静态分析
+   shellcheck script.sh
+   ```
+
+2. **测试执行**：
+   ```bash
+   # 在安全环境中测试脚本（如Docker容器）
+   docker run --rm -it -v $(pwd):/scripts ubuntu:latest bash
+   ```
+
+3. **Windows脚本测试**：
+   - 在Windows虚拟机或WSL中测试.cmd文件
+   - 使用`cmd /c "script.cmd"`执行
+
+### 开发工作流
+1. **修改脚本前**：先阅读现有代码，理解架构模式
+2. **添加新功能**：遵循现有的函数模块化模式
+3. **错误处理**：确保所有可能的错误情况都有适当的处理
+4. **用户提示**：保持一致的彩色输出和提示信息风格
+5. **跨平台考虑**：如果添加新脚本，考虑Windows和Linux的差异
+
+### 代码风格
+- **Shell脚本**：使用4空格缩进，函数名使用小写加下划线
+- **批处理脚本**：使用REM注释，重要配置放在文件开头
+- **颜色定义**：使用一致的ANSI颜色代码（RED, GREEN, YELLOW等）
+- **错误退出**：使用`exit 1`表示失败，`exit 0`表示成功
 
 ## 开发说明
 
