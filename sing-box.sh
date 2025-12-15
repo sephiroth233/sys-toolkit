@@ -1839,16 +1839,16 @@ show_menu() {
     echo "13. 安装 Snell 服务"
     echo "14. 卸载 Snell 服务"
     if [ ${snell_installed} -eq 0 ]; then
-        echo "15. 生成 Snell 配置"
-        echo "16. 删除 Snell 配置"
         if [ ${snell_running} -eq 0 ]; then
-            echo "17. 停止 Snell 服务"
+            echo "15. 停止 Snell 服务"
         else
-            echo "17. 启动 Snell 服务"
+            echo "15. 启动 Snell 服务"
         fi
-        echo "18. 重启 Snell 服务"
-        echo "19. 查看 Snell 状态"
-        echo "20. 查看 Snell 配置"
+        echo "16. 重启 Snell 服务"
+        echo "17. 查看 Snell 状态"
+        echo "18. 生成 Snell 配置"
+        echo "19. 查看 Snell 配置"
+        echo "20. 删除 Snell 配置"
     fi
 
     echo ""
@@ -1982,20 +1982,6 @@ while true; do
             ;;
         15)
             if [ ${snell_installed} -eq 0 ]; then
-                generate_snell_config
-            else
-                echo -e "${RED}Snell 尚未安装！${RESET}"
-            fi
-            ;;
-        16)
-            if [ ${snell_installed} -eq 0 ]; then
-                delete_snell_config
-            else
-                echo -e "${RED}Snell 尚未安装！${RESET}"
-            fi
-            ;;
-        17)
-            if [ ${snell_installed} -eq 0 ]; then
                 if [ ${snell_running} -eq 0 ]; then
                     stop_snell
                 else
@@ -2005,21 +1991,28 @@ while true; do
                 echo -e "${RED}Snell 尚未安装！${RESET}"
             fi
             ;;
-        18)
+        16)
             if [ ${snell_installed} -eq 0 ]; then
                 restart_snell
             else
                 echo -e "${RED}Snell 尚未安装！${RESET}"
             fi
             ;;
-        19)
+        17)
             if [ ${snell_installed} -eq 0 ]; then
                 status_snell
             else
                 echo -e "${RED}Snell 尚未安装！${RESET}"
             fi
             ;;
-        20)
+        18)
+            if [ ${snell_installed} -eq 0 ]; then
+                generate_snell_config
+            else
+                echo -e "${RED}Snell 尚未安装！${RESET}"
+            fi
+            ;;
+        19)
             if [ ${snell_installed} -eq 0 ]; then
                 if [ -f "${SNELL_CONFIG_DIR}/config.txt" ]; then
                     echo -e "${CYAN}=== Snell 配置信息 ===${RESET}"
@@ -2027,6 +2020,13 @@ while true; do
                 else
                     echo -e "${YELLOW}未找到 Snell 配置文件${RESET}"
                 fi
+            else
+                echo -e "${RED}Snell 尚未安装！${RESET}"
+            fi
+            ;;
+        20)
+            if [ ${snell_installed} -eq 0 ]; then
+                delete_snell_config
             else
                 echo -e "${RED}Snell 尚未安装！${RESET}"
             fi
