@@ -189,7 +189,8 @@ install_sing_box() {
     host_ip=$(curl -s http://checkip.amazonaws.com)
     ip_country=$(curl -s http://ipinfo.io/${host_ip}/country)
 
-    # 保存安装参数到文件，用于后续重新生成配置
+    # 保存安装参数到文件（可选，用于向后兼容）
+    # 注意：新版本建议直接从 config.json 读取配置
     cat > "${INSTALL_PARAMS_FILE}" << EOF
 vless_port=${vless_port}
 hysteria_port=${hysteria_port}
@@ -204,6 +205,7 @@ public_key=${public_key}
 host_ip=${host_ip}
 ip_country=${ip_country}
 EOF
+    echo -e "${YELLOW}注意：install_params.conf 已创建（向后兼容），新版本建议直接从 config.json 读取配置${RESET}"
 
     # 生成最小配置文件（初次安装不包含节点信息）
     cat > "${CONFIG_FILE}" << EOF
@@ -398,13 +400,15 @@ psk = ${psk}
 ipv6 = true
 EOF
 
-    # 保存安装参数
+    # 保存安装参数（可选，用于向后兼容）
+    # 注意：新版本建议直接从 snell-server.conf 读取配置
     cat > "${SNELL_INSTALL_PARAMS_FILE}" << EOF
 snell_port=${port}
 snell_psk=${psk}
 host_ip=${host_ip}
 ip_country=${ip_country}
 EOF
+    echo -e "${YELLOW}注意：Snell install_params.conf 已创建（向后兼容），新版本建议直接从 snell-server.conf 读取配置${RESET}"
 
     # 生成客户端配置
     cat > "${SNELL_CONFIG_DIR}/config.txt" << EOF
@@ -426,11 +430,7 @@ EOF
     echo -e "${CYAN}Snell 配置信息：${RESET}"
     cat "${SNELL_CONFIG_DIR}/config.txt"
 
-    # 保存到 sing-box 安装参数中（可选）
-    if [ -f "${INSTALL_PARAMS_FILE}" ]; then
-        echo "snell_port=${port}" >> "${INSTALL_PARAMS_FILE}"
-        echo "snell_psk=${psk}" >> "${INSTALL_PARAMS_FILE}"
-    fi
+    # 不再保存到 install_params.conf，配置信息已保存在 snell-server.conf 中
 }
 
 # 删除 Snell 配置
@@ -685,12 +685,23 @@ get_or_generate_port() {
 
 # 生成节点配置
 generate_node_config() {
-    if [ ! -f "${INSTALL_PARAMS_FILE}" ]; then
-        echo -e "${RED}未找到安装参数文件，请先安装 sing-box！${RESET}"
+    # 检查是否已安装
+    if ! is_sing_box_installed; then
+        echo -e "${RED}sing-box 未安装，请先安装！${RESET}"
         return 1
     fi
-    # 读取安装参数
-    source "${INSTALL_PARAMS_FILE}"
+
+    # 检查配置文件是否存在
+    if [ ! -f "${CONFIG_FILE}" ]; then
+        echo -e "${RED}配置文件不存在，请先完成初始安装！${RESET}"
+        return 1
+    fi
+
+    # 从配置文件读取必要参数
+    if ! parse_config_from_json; then
+        echo -e "${RED}无法从配置文件读取参数${RESET}"
+        return 1
+    fi
     echo -e "${CYAN}请选择要生成的协议（可多选，用空格分隔）:${RESET}"
     echo "1. Hysteria2"
     echo "2. Shadowsocks+ShadowTLS"
@@ -1035,6 +1046,84 @@ disable_bbr() {
     sysctl net.ipv4.tcp_congestion_control
 }
 
+# 从 Snell 配置文件读取参数
+parse_snell_config() {
+    if [ ! -f "${SNELL_CONFIG_FILE}" ]; then
+        echo -e "${YELLOW}Snell 配置文件不存在: ${SNELL_CONFIG_FILE}${RESET}"
+        return 1
+    fi
+
+    # 从 snell-server.conf 读取端口和 PSK
+    local snell_config=$(cat "${SNELL_CONFIG_FILE}" 2>/dev/null)
+    if [ -n "$snell_config" ]; then
+        # 提取 listen 行中的端口
+        local extracted_port=$(echo "$snell_config" | grep -E "^listen\s*=" | sed -E 's/^listen\s*=\s*[^:]*:([0-9]+)/\1/')
+        # 提取 psk
+        local extracted_psk=$(echo "$snell_config" | grep -E "^psk\s*=" | sed -E 's/^psk\s*=\s*//')
+
+        # 设置全局变量（如果调用者需要）
+        snell_port="$extracted_port"
+        snell_psk="$extracted_psk"
+    fi
+
+    # 获取本机 IP 和国家（如果未设置）
+    if [ -z "$host_ip" ]; then
+        host_ip=$(curl -s http://checkip.amazonaws.com 2>/dev/null || echo "未知")
+    fi
+    if [ -z "$ip_country" ]; then
+        ip_country=$(curl -s "http://ipinfo.io/${host_ip}/country" 2>/dev/null || echo "未知")
+    fi
+
+    return 0
+}
+
+# 显示配置来源信息
+show_config_source_info() {
+    echo -e "${CYAN}=== 配置来源信息 ===${RESET}"
+
+    # Sing-box 配置
+    if [ -f "${CONFIG_FILE}" ]; then
+        echo -e "${GREEN}✓ Sing-box 配置文件: ${CONFIG_FILE}${RESET}"
+        local config_size=$(stat -c%s "${CONFIG_FILE}" 2>/dev/null || stat -f%z "${CONFIG_FILE}" 2>/dev/null)
+        echo -e "  大小: ${config_size} 字节"
+        local inbound_count=$(jq '.inbounds | length' "${CONFIG_FILE}" 2>/dev/null || echo "0")
+        echo -e "  入站协议数量: ${inbound_count}"
+    else
+        echo -e "${RED}✗ Sing-box 配置文件不存在${RESET}"
+    fi
+
+    # Snell 配置
+    if [ -f "${SNELL_CONFIG_FILE}" ]; then
+        echo -e "${GREEN}✓ Snell 配置文件: ${SNELL_CONFIG_FILE}${RESET}"
+        # 使用 parse_snell_config 函数读取配置
+        if parse_snell_config; then
+            echo -e "  端口: ${snell_port:-未设置}"
+            echo -e "  PSK: ${snell_psk:0:10}... (部分显示)"
+            echo -e "  主机IP: ${host_ip:-未设置}"
+            echo -e "  国家: ${ip_country:-未设置}"
+        else
+            echo -e "  ${YELLOW}无法解析配置文件${RESET}"
+        fi
+    else
+        echo -e "${YELLOW}○ Snell 配置文件不存在${RESET}"
+    fi
+
+    # install_params.conf 文件（向后兼容）
+    if [ -f "${INSTALL_PARAMS_FILE}" ]; then
+        echo -e "${YELLOW}⚠ install_params.conf 存在（向后兼容）${RESET}"
+        echo -e "  路径: ${INSTALL_PARAMS_FILE}"
+        echo -e "  注意: 新版本建议直接从配置文件读取，此文件可安全删除"
+    fi
+
+    if [ -f "${SNELL_INSTALL_PARAMS_FILE}" ]; then
+        echo -e "${YELLOW}⚠ Snell install_params.conf 存在（向后兼容）${RESET}"
+        echo -e "  路径: ${SNELL_INSTALL_PARAMS_FILE}"
+        echo -e "  注意: 新版本建议直接从 snell-server.conf 读取，此文件可安全删除"
+    fi
+
+    echo ""
+}
+
 # 从 config.json 解析配置信息
 parse_config_from_json() {
     if [ ! -f "${CONFIG_FILE}" ]; then
@@ -1049,19 +1138,14 @@ parse_config_from_json() {
         return 1
     fi
 
-    # 读取安装参数（用于获取密钥等信息）
+    # 获取本机 IP 和国家
+    host_ip=$(curl -s http://checkip.amazonaws.com)
+    ip_country=$(curl -s http://ipinfo.io/${host_ip}/country)
+
+    # 尝试从 install_params.conf 读取（向后兼容）
     if [ -f "${INSTALL_PARAMS_FILE}" ]; then
         source "${INSTALL_PARAMS_FILE}"
-    else
-        echo -e "${YELLOW}警告：未找到安装参数文件，某些信息可能不完整${RESET}"
-    fi
-
-    # 获取本机 IP 和国家（如果参数文件中没有）
-    if [ -z "$host_ip" ]; then
-        host_ip=$(curl -s http://checkip.amazonaws.com)
-    fi
-    if [ -z "$ip_country" ]; then
-        ip_country=$(curl -s http://ipinfo.io/${host_ip}/country)
+        echo -e "${YELLOW}注意：使用 install_params.conf 中的参数（旧版本兼容）${RESET}"
     fi
 
     return 0
@@ -1749,6 +1833,9 @@ show_menu() {
         else
             echo "21. 启用 BBR"
         fi
+        echo ""
+        echo -e "${PURPLE}=== 配置管理 ===${RESET}"
+        echo "22. 查看配置来源信息"
     fi
     echo "0. 退出"
     echo -e "${GREEN}=========================${RESET}"
@@ -1925,6 +2012,9 @@ while true; do
             else
                 enable_bbr
             fi
+            ;;
+        22)
+            show_config_source_info
             ;;
         0)
             echo -e "${GREEN}已退出 sing-box 管理工具${RESET}"
