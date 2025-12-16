@@ -13,17 +13,17 @@
 - `navicat-reset.cmd` - Navicat Premium试用期重置工具
 
 ### Linux Shell脚本 (.sh)
-- `sing-box.sh` - Sing-box代理服务安装和管理脚本
+- `server-proxy.sh` - Sing-box 和 Snell 代理服务安装和管理脚本
 - `mihomo-install.sh` - Mihomo（原Clash.Meta）安装和更新脚本
 - `wsl-docker-setup.sh` - WSL Ubuntu + Docker一键配置脚本
 
 ## 脚本使用说明
 
 ### 网络代理相关
-1. **Sing-box** (`sing-box.sh`):
+1. **Sing-box 和 Snell 代理管理** (`server-proxy.sh`):
    ```bash
-   # 安装和管理Sing-box
-   sudo ./sing-box.sh
+   # 安装和管理 Sing-box 和 Snell 代理
+   sudo ./server-proxy.sh
    ```
 
 2. **Mihomo/Clash** (`mihomo-install.sh`):
