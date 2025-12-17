@@ -23,7 +23,7 @@
 
 ```bash
 # 下载脚本到 /usr/local/bin
-sudo curl -L -o /usr/local/bin/mihomo-install https://raw.githubusercontent.com/用户名/sys-toolkit/master/mihomo-install.sh
+sudo curl -L -o /usr/local/bin/mihomo-install https://raw.githubusercontent.com/sephiroth233/sys-toolkit/master/mihomo-install.sh
 
 # 设置执行权限
 sudo chmod +x /usr/local/bin/mihomo-install
@@ -46,7 +46,7 @@ mihomo-install install
 
 ```bash
 # 克隆整个仓库（需要 git）
-git clone https://github.com/用户名/sys-toolkit.git
+git clone https://github.com/sephiroth233/sys-toolkit.git
 cd sys-toolkit
 ```
 
@@ -56,10 +56,10 @@ cd sys-toolkit
 
 ```bash
 # 下载并执行最新版本
-bash <(curl -sL https://raw.githubusercontent.com/用户名/sys-toolkit/master/mihomo-install.sh) install
+bash <(curl -sL https://raw.githubusercontent.com/sephiroth233/sys-toolkit/master/mihomo-install.sh) install
 
 # 或者使用 wget
-bash <(wget -qO- https://raw.githubusercontent.com/用户名/sys-toolkit/master/mihomo-install.sh) install
+bash <(wget -qO- https://raw.githubusercontent.com/sephiroth233/sys-toolkit/master/mihomo-install.sh) install
 ```
 
 **注意：**
