@@ -166,6 +166,53 @@ get_installed_version() {
     fi
 }
 
+# 卸载 Mihomo
+uninstall_mihomo() {
+    log_info "正在卸载 Mihomo..."
+    if [ -f "$INSTALL_PATH" ]; then
+        rm -f "$INSTALL_PATH"
+        if [ $? -eq 0 ]; then
+            log_info "Mihomo 卸载成功"
+        else
+            log_error "卸载失败，请检查权限"
+            exit 1
+        fi
+    else
+        log_warn "Mihomo 未安装"
+    fi
+}
+
+# 清理安装脚本
+cleanup_script() {
+    log_info "正在清理安装脚本..."
+    local script_path=$(realpath "$0" 2>/dev/null || echo "$0")
+    if [ -f "$script_path" ]; then
+        log_info "脚本路径: $script_path"
+        echo -n "确定要删除脚本文件吗？(y/N): " >&2
+        read -r response
+        if [[ "$response" =~ ^[Yy]$ ]]; then
+            rm -f "$script_path"
+            if [ $? -eq 0 ]; then
+                log_info "脚本删除成功"
+            else
+                log_error "脚本删除失败，请检查权限"
+                exit 1
+            fi
+        else
+            log_info "取消删除"
+        fi
+    else
+        log_warn "脚本文件不存在或无法确定路径"
+    fi
+}
+
+# 完全卸载（Mihomo + 脚本）
+purge_all() {
+    log_info "开始完全卸载..."
+    uninstall_mihomo
+    cleanup_script
+}
+
 # 主函数
 main() {
     local action=${1:-install}
@@ -238,6 +285,15 @@ main() {
         version)
             check_current_version
             ;;
+        uninstall)
+            uninstall_mihomo
+            ;;
+        cleanup)
+            cleanup_script
+            ;;
+        purge)
+            purge_all
+            ;;
         *)
             cat << EOF
 Mihomo 安装/更新脚本
@@ -249,11 +305,17 @@ Mihomo 安装/更新脚本
     install    安装 Mihomo（默认）
     update     更新 Mihomo
     version    查看当前版本
+    uninstall  卸载 Mihomo
+    cleanup    删除安装脚本
+    purge      完全卸载（Mihomo + 脚本）
 
 示例:
     mihomo-install install
     mihomo-install update
     mihomo-install version
+    mihomo-install uninstall
+    mihomo-install cleanup
+    mihomo-install purge
 EOF
             exit 1
             ;;
