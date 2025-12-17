@@ -12,7 +12,11 @@
 
 ✅ 友好的交互提示和错误处理
 ## 系统要求
-**操作系统**: macOS**架构**: arm64 (Apple Silicon) 或 amd64 (Intel)**权限**: 需要对 `/usr/local/bin` 目录的写权限**依赖工具**: curl, gunzip（系统自带）
+**操作系统**: macOS**架构**: arm64 (Apple Silicon) 或 amd64 (Intel) 
+
+**权限**: 需要对 `/usr/local/bin` 目录的写权限
+
+**依赖工具**: curl, gunzip（系统自带）
 ## 下载和安装脚本
 ### 推荐方法：直接下载到 /usr/local/bin（推荐）
 将脚本下载到 `/usr/local/bin` 目录，与 mihomo 内核放在同一位置，方便管理：
