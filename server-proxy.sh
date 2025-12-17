@@ -164,6 +164,12 @@ install_sing_box() {
     shadowsocks_port=$(generate_unused_port)
     ss_password=$(sing-box generate rand 16 --base64)
     password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
+    socks_port=$(generate_unused_port)
+    http_port=$(generate_unused_port)
+    socks_username=$(tr -dc a-z </dev/urandom | head -c 8)
+    socks_password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
+    http_username=$(tr -dc a-z </dev/urandom | head -c 8)
+    http_password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
 
     # 生成 UUID 和 Reality 密钥对
     uuid=$(sing-box generate uuid)
@@ -679,8 +685,10 @@ generate_node_config() {
     echo "2. Shadowsocks+ShadowTLS"
     echo "3. VLESS+Vision+Reality"
     echo "4. AnyTLS"
-    echo "5. 全部"
-    read -p "请输入选项编号 (1-5): " choices
+    echo "5. SOCKS5代理"
+    echo "6. HTTP代理"
+    echo "7. 全部"
+    read -p "请输入选项编号 (1-7): " choices
     # 检查必要的命令
     check_ss_command
     check_jq_command
@@ -697,7 +705,7 @@ generate_node_config() {
     fi
     local new_inbounds
     new_inbounds=$(echo "$current_config" | jq '.inbounds')
-    if [[ "$choices" == *"5"* ]] || [[ "$choices" == *"1"* ]]; then
+    if [[ "$choices" == *"7"* ]] || [[ "$choices" == *"1"* ]]; then
         # 获取 Hysteria2 端口
         echo -e "${CYAN}=== 配置 Hysteria2 ===${RESET}"
         hysteria_port=$(get_or_generate_port "Hysteria2" "$hysteria_port")
@@ -730,7 +738,7 @@ generate_node_config() {
 
         new_inbounds=$(jq --argjson item "$hysteria_config" '. += [$item]' <<< "$new_inbounds")
     fi
-    if [[ "$choices" == *"5"* ]] || [[ "$choices" == *"2"* ]]; then
+    if [[ "$choices" == *"7"* ]] || [[ "$choices" == *"2"* ]]; then
         # 获取 ShadowTLS 和 Shadowsocks 端口
         echo -e "${CYAN}=== 配置 Shadowsocks+ShadowTLS ===${RESET}"
         shadowtls_port=$(get_or_generate_port "ShadowTLS" "$shadowtls_port")
@@ -782,7 +790,7 @@ generate_node_config() {
 
         new_inbounds=$(jq --argjson item "$shadowsocks_config" '. += [$item]' <<< "$new_inbounds")
     fi
-    if [[ "$choices" == *"5"* ]] || [[ "$choices" == *"3"* ]]; then
+    if [[ "$choices" == *"7"* ]] || [[ "$choices" == *"3"* ]]; then
         # 获取 VLESS 端口
         echo -e "${CYAN}=== 配置 VLESS+Vision+Reality ===${RESET}"
         vless_port=$(get_or_generate_port "VLESS" "$vless_port")
@@ -823,7 +831,7 @@ generate_node_config() {
 
         new_inbounds=$(jq --argjson item "$vless_config" '. += [$item]' <<< "$new_inbounds")
     fi
-    if [[ "$choices" == *"5"* ]] || [[ "$choices" == *"4"* ]]; then
+    if [[ "$choices" == *"7"* ]] || [[ "$choices" == *"4"* ]]; then
         # 获取 AnyTLS 端口
         echo -e "${CYAN}=== 配置 AnyTLS ===${RESET}"
         anytls_port=$(get_or_generate_port "AnyTLS" "$anytls_port")
@@ -857,6 +865,58 @@ generate_node_config() {
         fi
 
         new_inbounds=$(jq --argjson item "$anytls_config" '. += [$item]' <<< "$new_inbounds")
+    fi
+    if [[ "$choices" == *"7"* ]] || [[ "$choices" == *"5"* ]]; then
+        # 获取 SOCKS5 端口
+        echo -e "${CYAN}=== 配置 SOCKS5 代理 ===${RESET}"
+        socks_port=$(get_or_generate_port "SOCKS5" "$socks_port")
+        # 添加 SOCKS5 配置
+        local socks_config
+        socks_config=$(jq -n \
+            --arg port "$socks_port" \
+            --arg username "$socks_username" \
+            --arg password "$socks_password" \
+            '{
+                type: "socks",
+                tag: "socks-in",
+                listen: "::",
+                listen_port: ($port | tonumber),
+                users: [{
+                    username: $username,
+                    password: $password
+                }]
+            }')
+        if [ -z "$socks_config" ] || [ "$socks_config" == "null" ]; then
+            echo -e "${RED}错误: SOCKS5 配置生成失败${RESET}"
+            return 1
+        fi
+        new_inbounds=$(jq --argjson item "$socks_config" '. += [$item]' <<< "$new_inbounds")
+    fi
+    if [[ "$choices" == *"7"* ]] || [[ "$choices" == *"6"* ]]; then
+        # 获取 HTTP 端口
+        echo -e "${CYAN}=== 配置 HTTP 代理 ===${RESET}"
+        http_port=$(get_or_generate_port "HTTP" "$http_port")
+        # 添加 HTTP 配置
+        local http_config
+        http_config=$(jq -n \
+            --arg port "$http_port" \
+            --arg username "$http_username" \
+            --arg password "$http_password" \
+            '{
+                type: "http",
+                tag: "http-in",
+                listen: "::",
+                listen_port: ($port | tonumber),
+                users: [{
+                    username: $username,
+                    password: $password
+                }]
+            }')
+        if [ -z "$http_config" ] || [ "$http_config" == "null" ]; then
+            echo -e "${RED}错误: HTTP 配置生成失败${RESET}"
+            return 1
+        fi
+        new_inbounds=$(jq --argjson item "$http_config" '. += [$item]' <<< "$new_inbounds")
     fi
 
     # 检查 inbounds 是否为空
@@ -1112,6 +1172,12 @@ parse_config_from_json() {
         shadowsocks_port=$(generate_unused_port)
         ss_password=$(sing-box generate rand 16 --base64 2>/dev/null || tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
         password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
+        socks_port=$(generate_unused_port)
+        http_port=$(generate_unused_port)
+        socks_username=$(tr -dc a-z </dev/urandom | head -c 8)
+        socks_password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
+        http_username=$(tr -dc a-z </dev/urandom | head -c 8)
+        http_password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
 
         # 生成 UUID 和 Reality 密钥对
         uuid=$(sing-box generate uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
@@ -1132,6 +1198,8 @@ parse_config_from_json() {
         extract_protocol_from_config "shadowsocks"
         extract_protocol_from_config "vless"
         extract_protocol_from_config "anytls"
+        extract_protocol_from_config "socks"
+        extract_protocol_from_config "http"
 
         # 如果某些参数未设置，使用默认值
         if [ -z "$vless_port" ]; then
@@ -1167,6 +1235,24 @@ parse_config_from_json() {
                 private_key=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
                 public_key=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
             fi
+        fi
+        if [ -z "$socks_port" ]; then
+            socks_port=$(generate_unused_port)
+        fi
+        if [ -z "$http_port" ]; then
+            http_port=$(generate_unused_port)
+        fi
+        if [ -z "$socks_username" ]; then
+            socks_username=$(tr -dc a-z </dev/urandom | head -c 8)
+        fi
+        if [ -z "$socks_password" ]; then
+            socks_password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
+        fi
+        if [ -z "$http_username" ]; then
+            http_username=$(tr -dc a-z </dev/urandom | head -c 8)
+        fi
+        if [ -z "$http_password" ]; then
+            http_password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
         fi
     fi
 
@@ -1227,6 +1313,30 @@ extract_protocol_from_config() {
                 return 0
             fi
             ;;
+        socks)
+            config_data=$(jq -r '.inbounds[] | select(.type == "socks") | {port: .listen_port, username: .users[0].username, password: .users[0].password}' "${CONFIG_FILE}" 2>/dev/null)
+            if [ -n "$config_data" ] && [ "$config_data" != "null" ]; then
+                local port=$(echo "$config_data" | jq -r '.port')
+                local user=$(echo "$config_data" | jq -r '.username')
+                local pass=$(echo "$config_data" | jq -r '.password')
+                [ -n "$port" ] && [ "$port" != "null" ] && socks_port=$port
+                [ -n "$user" ] && [ "$user" != "null" ] && socks_username=$user
+                [ -n "$pass" ] && [ "$pass" != "null" ] && socks_password=$pass
+                return 0
+            fi
+            ;;
+        http)
+            config_data=$(jq -r '.inbounds[] | select(.type == "http") | {port: .listen_port, username: .users[0].username, password: .users[0].password}' "${CONFIG_FILE}" 2>/dev/null)
+            if [ -n "$config_data" ] && [ "$config_data" != "null" ]; then
+                local port=$(echo "$config_data" | jq -r '.port')
+                local user=$(echo "$config_data" | jq -r '.username')
+                local pass=$(echo "$config_data" | jq -r '.password')
+                [ -n "$port" ] && [ "$port" != "null" ] && http_port=$port
+                [ -n "$user" ] && [ "$user" != "null" ] && http_username=$user
+                [ -n "$pass" ] && [ "$pass" != "null" ] && http_password=$pass
+                return 0
+            fi
+            ;;
 
     esac
 
@@ -1271,6 +1381,14 @@ generate_client_config() {
             anytls)
                 local uri="anytls://${public_key}@${host_ip}:${anytls_port}/?sni=www.bing.com&insecure=1&alpn=h2,http/1.1#${ip_country}-anytls"
                 echo -e "==== AnyTLS ====\n${uri}\n"
+                ;;
+            socks)
+                local uri="socks5://${socks_username}:${socks_password}@${host_ip}:${socks_port}#${ip_country}-socks5"
+                echo -e "==== SOCKS5 代理 ====\n${uri}\n"
+                ;;
+            http)
+                local uri="http://${http_username}:${http_password}@${host_ip}:${http_port}#${ip_country}-http"
+                echo -e "==== HTTP 代理 ====\n${uri}\n"
                 ;;
         esac
     done
@@ -1319,6 +1437,18 @@ check_sing_box() {
     if jq -e '.inbounds[] | select(.type == "shadowtls")' "${CONFIG_FILE}" &>/dev/null; then
         available_protocols+=("shadowsocks")
         protocol_names+=("Shadowsocks+ShadowTLS")
+    fi
+
+    # 检查 SOCKS5 代理
+    if jq -e '.inbounds[] | select(.type == "socks")' "${CONFIG_FILE}" &>/dev/null; then
+        available_protocols+=("socks")
+        protocol_names+=("SOCKS5 代理")
+    fi
+
+    # 检查 HTTP 代理
+    if jq -e '.inbounds[] | select(.type == "http")' "${CONFIG_FILE}" &>/dev/null; then
+        available_protocols+=("http")
+        protocol_names+=("HTTP 代理")
     fi
 
     # 如果没有找到任何协议
@@ -1678,7 +1808,7 @@ delete_node_config() {
     fi
 
     # 获取所有节点类型的配置（排除 direct 类型）
-    local node_types=("hysteria2" "vless" "anytls" "shadowtls" "shadowsocks")
+    local node_types=("hysteria2" "vless" "anytls" "shadowtls" "shadowsocks" "socks" "http")
     local available_nodes=()
     local node_display_names=()
     local node_info=()
@@ -1709,6 +1839,12 @@ delete_node_config() {
                         ;;
                     shadowsocks)
                         node_display_names+=("Shadowsocks (端口: $port)")
+                        ;;
+                    socks)
+                        node_display_names+=("SOCKS5 代理 (端口: $port)")
+                        ;;
+                    http)
+                        node_display_names+=("HTTP 代理 (端口: $port)")
                         ;;
                 esac
             done <<< "$nodes"
