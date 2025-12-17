@@ -2,12 +2,31 @@
 ## 简介
 `mihomo-install.sh` 是一个用于在 macOS 系统上自动安装和更新 Mihomo（Meta 内核）的 Shell 脚本。
 ## 功能特性
-✅ 自动检测系统架构（arm64/amd64）✅ 从 GitHub 获取最新版本✅ 智能版本检测，避免重复下载✅ 支持安装、更新、查看版本✅ 友好的交互提示和错误处理
+✅ 自动检测系统架构（arm64/amd64）
+
+✅ 从 GitHub 获取最新版本
+
+✅ 智能版本检测，避免重复下载
+
+✅ 支持安装、更新、查看版本
+
+✅ 友好的交互提示和错误处理
 ## 系统要求
 **操作系统**: macOS**架构**: arm64 (Apple Silicon) 或 amd64 (Intel)**权限**: 需要对 `/usr/local/bin` 目录的写权限**依赖工具**: curl, gunzip（系统自带）
 ## 下载和安装脚本
 ### 推荐方法：直接下载到 /usr/local/bin（推荐）
 将脚本下载到 `/usr/local/bin` 目录，与 mihomo 内核放在同一位置，方便管理：
+
+```bash
+# 下载脚本到 /usr/local/bin
+sudo curl -L -o /usr/local/bin/mihomo-install https://raw.githubusercontent.com/用户名/sys-toolkit/master/mihomo-install.sh
+
+# 设置执行权限
+sudo chmod +x /usr/local/bin/mihomo-install
+
+# 执行脚本（现在可以直接使用 mihomo-install 命令）
+mihomo-install install
+```
 
 
 
@@ -20,6 +39,30 @@
 
 
 ### 方法三：克隆仓库
+
+```bash
+# 克隆整个仓库（需要 git）
+git clone https://github.com/用户名/sys-toolkit.git
+cd sys-toolkit
+```
+
+### 方法四：直接从 GitHub 下载执行
+
+直接从 GitHub 下载脚本并立即执行，无需保存到本地：
+
+```bash
+# 下载并执行最新版本
+bash <(curl -sL https://raw.githubusercontent.com/用户名/sys-toolkit/master/mihomo-install.sh) install
+
+# 或者使用 wget
+bash <(wget -qO- https://raw.githubusercontent.com/用户名/sys-toolkit/master/mihomo-install.sh) install
+```
+
+**注意：**
+- 将 `用户名` 替换为实际的 GitHub 用户名
+- 将 `sys-toolkit` 替换为实际的仓库名称
+- 此方法直接执行远程脚本，建议先检查脚本内容再执行
+- 可以添加 `version`、`update`、`uninstall` 等参数
 
 
 
