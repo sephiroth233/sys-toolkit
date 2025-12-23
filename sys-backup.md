@@ -10,7 +10,7 @@
 
 ### 方式一：直接执行（推荐）
 ```bash
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/sephiroth233/sys-toolkit/master/sys-backup.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/sephiroth233/sys-toolkit/master/sys-backup.sh)
 ```
 
 ### 方式二：保存后执行
