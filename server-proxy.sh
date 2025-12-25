@@ -160,7 +160,6 @@ install_sing_box() {
     vless_port=$(generate_unused_port)
     hysteria_port=$(generate_unused_port)
     anytls_port=$(generate_unused_port)
-    shadowtls_port=$(generate_unused_port)
     shadowsocks_port=$(generate_unused_port)
     ss_password=$(sing-box generate rand 16 --base64)
     password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
@@ -682,7 +681,7 @@ generate_node_config() {
     fi
     echo -e "${CYAN}请选择要生成的协议（可多选，用空格分隔）:${RESET}"
     echo "1. Hysteria2"
-    echo "2. Shadowsocks+ShadowTLS"
+    echo "2. Shadowsocks"
     echo "3. VLESS+Vision+Reality"
     echo "4. AnyTLS"
     echo "5. SOCKS5代理"
@@ -739,35 +738,9 @@ generate_node_config() {
         new_inbounds=$(jq --argjson item "$hysteria_config" '. += [$item]' <<< "$new_inbounds")
     fi
     if [[ "$choices" == *"7"* ]] || [[ "$choices" == *"2"* ]]; then
-        # 获取 ShadowTLS 和 Shadowsocks 端口
-        echo -e "${CYAN}=== 配置 Shadowsocks+ShadowTLS ===${RESET}"
-        shadowtls_port=$(get_or_generate_port "ShadowTLS" "$shadowtls_port")
+        # 获取 Shadowsocks 端口
+        echo -e "${CYAN}=== 配置 Shadowsocks ===${RESET}"
         shadowsocks_port=$(get_or_generate_port "Shadowsocks" "$shadowsocks_port")
-        # 添加 ShadowTLS
-        local shadowtls_config
-        shadowtls_config=$(jq -n \
-            --arg port "$shadowtls_port" \
-            --arg password "$password" \
-            '{
-                type: "shadowtls",
-                listen: "::",
-                listen_port: ($port | tonumber),
-                detour: "shadowsocks-in",
-                version: 3,
-                users: [{password: $password}],
-                handshake: {
-                    server: "www.tesla.com",
-                    server_port: 443
-                },
-                strict_mode: true
-            }')
-
-        if [ -z "$shadowtls_config" ] || [ "$shadowtls_config" == "null" ]; then
-            echo -e "${RED}错误: ShadowTLS 配置生成失败${RESET}"
-            return 1
-        fi
-
-        new_inbounds=$(jq --argjson item "$shadowtls_config" '. += [$item]' <<< "$new_inbounds")
         # 添加 Shadowsocks
         local shadowsocks_config
         shadowsocks_config=$(jq -n \
@@ -776,9 +749,9 @@ generate_node_config() {
             '{
                 type: "shadowsocks",
                 tag: "shadowsocks-in",
-                listen: "127.0.0.1",
+                listen: "::",
                 listen_port: ($port | tonumber),
-                method: "2022-blake3-aes-128-gcm",
+                method: "2022-blake3-aes-256-gcm",
                 password: $ss_password,
                 multiplex: {enabled: true}
             }')
@@ -1168,7 +1141,6 @@ parse_config_from_json() {
         vless_port=$(generate_unused_port)
         hysteria_port=$(generate_unused_port)
         anytls_port=$(generate_unused_port)
-        shadowtls_port=$(generate_unused_port)
         shadowsocks_port=$(generate_unused_port)
         ss_password=$(sing-box generate rand 16 --base64 2>/dev/null || tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
         password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
@@ -1210,9 +1182,6 @@ parse_config_from_json() {
         fi
         if [ -z "$anytls_port" ]; then
             anytls_port=$(generate_unused_port)
-        fi
-        if [ -z "$shadowtls_port" ]; then
-            shadowtls_port=$(generate_unused_port)
         fi
         if [ -z "$shadowsocks_port" ]; then
             shadowsocks_port=$(generate_unused_port)
@@ -1276,25 +1245,16 @@ extract_protocol_from_config() {
             fi
             ;;
         shadowsocks)
-             # 从 shadowtls 中提取监听端口和密码
-             local shadowtls_data=$(jq -r '.inbounds[] | select(.type == "shadowtls") | {port: .listen_port, password: .users[0].password}' "${CONFIG_FILE}" 2>/dev/null)
-
-              # 从 shadowsocks 中提取密码
-             local ss_data=$(jq -r '.inbounds[] | select(.type == "shadowsocks") | {password: .password}' "${CONFIG_FILE}" 2>/dev/null)
-                   if [ -n "$shadowtls_data" ] && [ "$shadowtls_data" != "null" ]; then
-                            local port=$(echo "$shadowtls_data" | jq -r '.port')
-                            local stls_pass=$(echo "$shadowtls_data" | jq -r '.password')
-                            [ -n "$port" ] && [ "$port" != "null" ] && shadowtls_port=$port
-                            [ -n "$stls_pass" ] && [ "$stls_pass" != "null" ] && password=$stls_pass
-                   fi
-                   if [ -n "$ss_data" ] && [ "$ss_data" != "null" ]; then
-                            local ss_pass=$(echo "$ss_data" | jq -r '.password')
-                            [ -n "$ss_pass" ] && [ "$ss_pass" != "null" ] && ss_password=$ss_pass
-                   fi
-                   if [ -n "$shadowtls_data" ] || [ -n "$ss_data" ]; then
-                            return 0
-                   fi
-                   ;;
+            # 从 shadowsocks 中提取端口和密码
+            local ss_data=$(jq -r '.inbounds[] | select(.type == "shadowsocks") | {port: .listen_port, password: .password}' "${CONFIG_FILE}" 2>/dev/null)
+            if [ -n "$ss_data" ] && [ "$ss_data" != "null" ]; then
+                local port=$(echo "$ss_data" | jq -r '.port')
+                local ss_pass=$(echo "$ss_data" | jq -r '.password')
+                [ -n "$port" ] && [ "$port" != "null" ] && shadowsocks_port=$port
+                [ -n "$ss_pass" ] && [ "$ss_pass" != "null" ] && ss_password=$ss_pass
+                return 0
+            fi
+            ;;
         vless)
             config_data=$(jq -r '.inbounds[] | select(.type == "vless") | {port: .listen_port, uuid: .users[0].uuid}' "${CONFIG_FILE}" 2>/dev/null)
             if [ -n "$config_data" ] && [ "$config_data" != "null" ]; then
@@ -1343,6 +1303,24 @@ extract_protocol_from_config() {
     return 1
 }
 
+# URL 编码函数
+urlencode() {
+    local string="${1}"
+    local strlen=${#string}
+    local encoded=""
+    local pos c o
+
+    for (( pos=0 ; pos<strlen ; pos++ )); do
+        c=${string:$pos:1}
+        case "$c" in
+            [-_.~a-zA-Z0-9] ) o="${c}" ;;
+            * ) printf -v o '%%%02x' "'$c"
+        esac
+        encoded+="${o}"
+    done
+    echo "${encoded}"
+}
+
 # 生成客户端配置（从 config.json 读取）
 generate_client_config() {
     if ! parse_config_from_json; then
@@ -1370,8 +1348,11 @@ generate_client_config() {
                 echo -e "==== Hysteria2 ====\n${uri}\n"
                 ;;
             shadowsocks)
-                echo  -e ""
-                local uri="${ip_country}-ss = ss, ${host_ip}, ${shadowtls_port}, encrypt-method=2022-blake3-aes-128-gcm, password=${ss_password}, shadow-tls-password=${password}, shadow-tls-sni=www.tesla.com, shadow-tls-version=3, udp-relay=true"
+                echo -e ""
+                # 编码密码
+                local encoded_password=$(urlencode "$ss_password")
+                # 生成 SS URL 格式：ss://method:password@host:port#name
+                local uri="ss://2022-blake3-aes-256-gcm:${encoded_password}@${host_ip}:${shadowsocks_port}#${ip_country}-ss"
                 echo -e "==== Shadowsocks ====\n${uri}\n"
                 ;;
             vless)
@@ -1433,10 +1414,10 @@ check_sing_box() {
         protocol_names+=("AnyTLS")
     fi
 
-    # 检查 Shadowsocks+ShadowTLS
-    if jq -e '.inbounds[] | select(.type == "shadowtls")' "${CONFIG_FILE}" &>/dev/null; then
+    # 检查 Shadowsocks
+    if jq -e '.inbounds[] | select(.type == "shadowsocks")' "${CONFIG_FILE}" &>/dev/null; then
         available_protocols+=("shadowsocks")
-        protocol_names+=("Shadowsocks+ShadowTLS")
+        protocol_names+=("Shadowsocks")
     fi
 
     # 检查 SOCKS5 代理
@@ -1808,7 +1789,7 @@ delete_node_config() {
     fi
 
     # 获取所有节点类型的配置（排除 direct 类型）
-    local node_types=("hysteria2" "vless" "anytls" "shadowtls" "shadowsocks" "socks" "http")
+    local node_types=("hysteria2" "vless" "anytls" "shadowsocks" "socks" "http")
     local available_nodes=()
     local node_display_names=()
     local node_info=()
@@ -1833,9 +1814,6 @@ delete_node_config() {
                         ;;
                     anytls)
                         node_display_names+=("AnyTLS (端口: $port)")
-                        ;;
-                    shadowtls)
-                        node_display_names+=("ShadowTLS (端口: $port)")
                         ;;
                     shadowsocks)
                         node_display_names+=("Shadowsocks (端口: $port)")
