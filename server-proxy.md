@@ -42,14 +42,14 @@ curl -fsSL https://raw.githubusercontent.com/sephiroth233/sys-toolkit/master/ser
 ### 3️⃣ **节点配置生成** ⭐
 支持生成多种协议的入站配置：
 
-| 协议 | 特点 |
-|------|------|
-| **Hysteria2** | 高性能，基于 UDP |
-| **Shadowsocks + ShadowTLS** | 流量伪装能力强 |
-| **VLESS + Vision + Reality** | 防审查，TLS 指纹识别 |
-| **AnyTLS** | 通用 TLS 代理 |
-| **SOCKS5 代理** | 标准 SOCKS5 协议，支持认证 |
-| **HTTP 代理** | 标准 HTTP 代理，支持认证 |
+| 协议                          
+|-----------------------------|
+| **Hysteria2**               |
+| **Shadowsocks2022**         |
+| **VLESS + Vision + Reality** |
+| **AnyTLS**                  |
+| **SOCKS5 代理**               |
+| **HTTP 代理**                 |
 
 **功能特性：**
 - 支持单独或批量生成协议（可多选）
@@ -248,7 +248,7 @@ bash <(curl -fsSL sing-box-ebon.vercel.app)
 
 ### **sing-box 使用流程**
 - **首次使用**：执行脚本 → 选项 1 安装 → 选项 7 生成配置
-- **配置多个协议**：选项 7 时选择"全部"或多个协议编号（支持 Hysteria2、Shadowsocks+ShadowTLS、VLESS+Reality、AnyTLS、SOCKS5、HTTP 等协议）
+- **配置多个协议**：选项 7 时选择"全部"或多个协议编号（支持 Hysteria2、Shadowsocks2022、VLESS+Reality、AnyTLS、SOCKS5、HTTP 等协议）
 - **获取分享链接**：选项 8 查看已生成的 URI 链接
 - **管理配置**：选项 9 删除不需要的节点配置
 - **中转功能**：选项 10-12 管理端口转发

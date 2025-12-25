@@ -161,7 +161,7 @@ install_sing_box() {
     hysteria_port=$(generate_unused_port)
     anytls_port=$(generate_unused_port)
     shadowsocks_port=$(generate_unused_port)
-    ss_password=$(sing-box generate rand 16 --base64)
+    ss_password=$(sing-box generate rand --base64 32)
     password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
     socks_port=$(generate_unused_port)
     http_port=$(generate_unused_port)
@@ -1142,7 +1142,7 @@ parse_config_from_json() {
         hysteria_port=$(generate_unused_port)
         anytls_port=$(generate_unused_port)
         shadowsocks_port=$(generate_unused_port)
-        ss_password=$(sing-box generate rand 16 --base64 2>/dev/null || tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
+        ss_password=$(sing-box generate rand 32 --base64 2>/dev/null || tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
         password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
         socks_port=$(generate_unused_port)
         http_port=$(generate_unused_port)
@@ -1187,7 +1187,7 @@ parse_config_from_json() {
             shadowsocks_port=$(generate_unused_port)
         fi
         if [ -z "$ss_password" ]; then
-            ss_password=$(sing-box generate rand 16 --base64 2>/dev/null || tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
+            ss_password=$(sing-box generate rand 32 --base64 2>/dev/null || tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
         fi
         if [ -z "$password" ]; then
             password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
@@ -1351,7 +1351,6 @@ generate_client_config() {
                 echo -e ""
                 # 编码密码
                 local encoded_password=$(urlencode "$ss_password")
-                # 生成 SS URL 格式：ss://method:password@host:port#name
                 local uri="ss://2022-blake3-aes-256-gcm:${encoded_password}@${host_ip}:${shadowsocks_port}#${ip_country}-ss"
                 echo -e "==== Shadowsocks ====\n${uri}\n"
                 ;;
