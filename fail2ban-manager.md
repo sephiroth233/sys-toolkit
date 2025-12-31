@@ -155,7 +155,7 @@ action = %(action_mwl)s # 发送邮件+日志
 enabled = true         # 启用此规则
 ignoreip = 127.0.0.1/8 # 本地 IP 不禁封
 filter = sshd          # 使用 sshd 过滤器
-port = 10022           # SSH 监听端口（示例）
+port = 22           # SSH 监听端口（示例）
 maxretry = 3           # SSH 最大失败次数
 findtime = 1d          # SSH 时间窗口：1 天
 bantime = -1           # SSH 禁封时长：-1 = 永久禁封
@@ -478,7 +478,7 @@ sudo ./fail2ban-manager.sh edit-config
 
 5. **多层防护**
    - 使用强密码和密钥认证
-   - 更改 SSH 默认端口（不一定是 10022）
+   - 更改 SSH 默认端口（不一定是 22）
    - 禁用 root 登录
    - 使用公钥认证
 
