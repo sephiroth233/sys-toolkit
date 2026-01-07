@@ -450,11 +450,82 @@ do_restore() {
 }
 
 # ==================== 定时任务管理 ====================
+is_cron_installed() {
+    command -v crontab &> /dev/null
+}
+
+install_cron() {
+    log_info "正在安装 cron..."
+
+    if is_cron_installed; then
+        log_warn "cron 已安装"
+        return 0
+    fi
+
+    # 检测包管理器并安装
+    if command -v apt-get &> /dev/null; then
+        apt-get update && apt-get install -y cron
+        # 启动 cron 服务
+        systemctl enable cron 2>/dev/null || true
+        systemctl start cron 2>/dev/null || service cron start 2>/dev/null || true
+    elif command -v yum &> /dev/null; then
+        yum install -y cronie
+        systemctl enable crond 2>/dev/null || true
+        systemctl start crond 2>/dev/null || service crond start 2>/dev/null || true
+    elif command -v dnf &> /dev/null; then
+        dnf install -y cronie
+        systemctl enable crond 2>/dev/null || true
+        systemctl start crond 2>/dev/null || service crond start 2>/dev/null || true
+    elif command -v pacman &> /dev/null; then
+        pacman -Sy --noconfirm cronie
+        systemctl enable cronie 2>/dev/null || true
+        systemctl start cronie 2>/dev/null || true
+    elif command -v zypper &> /dev/null; then
+        zypper install -y cron
+        systemctl enable cron 2>/dev/null || true
+        systemctl start cron 2>/dev/null || true
+    elif command -v apk &> /dev/null; then
+        apk add --no-cache dcron
+        rc-update add dcron 2>/dev/null || true
+        rc-service dcron start 2>/dev/null || true
+    else
+        log_error "无法自动安装 cron，请手动安装"
+        return 1
+    fi
+
+    if is_cron_installed; then
+        log_success "cron 安装成功"
+        return 0
+    else
+        log_error "cron 安装失败"
+        return 1
+    fi
+}
+
+check_cron() {
+    if ! is_cron_installed; then
+        log_warn "crontab 命令未找到"
+        read -p "是否现在安装 cron? (y/n): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            install_cron
+            return $?
+        else
+            log_error "cron 未安装，无法继续"
+            return 1
+        fi
+    fi
+    return 0
+}
+
 get_script_path() {
     readlink -f "$0"
 }
 
 setup_cron() {
+    # 检查 cron 是否安装
+    check_cron || return 1
+
     log_info "设置定时备份任务"
 
     echo ""
@@ -531,6 +602,9 @@ setup_cron() {
 }
 
 show_cron() {
+    # 检查 cron 是否安装
+    check_cron || return 1
+
     log_info "当前定时备份任务:"
     echo ""
 
@@ -546,6 +620,9 @@ show_cron() {
 }
 
 remove_cron() {
+    # 检查 cron 是否安装
+    check_cron || return 1
+
     local script_path=$(get_script_path)
 
     if crontab -l 2>/dev/null | grep -q "$script_path"; then
