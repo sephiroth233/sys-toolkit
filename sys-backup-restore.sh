@@ -190,6 +190,7 @@ configure_rclone_remote() {
     echo "1. 运行 rclone config 交互式配置"
     echo "2. 查看已配置的远程存储"
     echo "3. 手动设置远程存储路径"
+    echo -e "4. 设置备份源目录 (当前: ${YELLOW}$SOURCE_DIR${RESET})"
     echo "0. 返回"
     echo ""
     read -p "请选择操作: " choice
@@ -211,6 +212,19 @@ configure_rclone_remote() {
             if [ -n "$new_remote" ]; then
                 RCLONE_REMOTE="$new_remote"
                 save_config
+            fi
+            ;;
+        4)
+            echo ""
+            echo -e "${YELLOW}当前备份源目录: ${CYAN}$SOURCE_DIR${RESET}"
+            read -p "请输入新的备份源目录: " new_source
+            if [ -n "$new_source" ]; then
+                if [ -d "$new_source" ]; then
+                    SOURCE_DIR="$new_source"
+                    save_config
+                else
+                    log_error "目录不存在: $new_source"
+                fi
             fi
             ;;
         0)
