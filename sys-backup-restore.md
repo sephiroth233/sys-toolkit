@@ -266,17 +266,4 @@ sudo bash <(curl -fsSL https://raw.githubusercontent.com/sephiroth233/sys-toolki
 这个脚本是一个**完整的系统备份恢复解决方案**，特别适合需要定期备份服务器数据到云存储的用户！ 🎯
 
 
-## 需要备份的目录路径
-SOURCE_DIR="/opt"
-
-## rclone 远程存储路径 (格式: remote_name:bucket/path)
-RCLONE_REMOTE="s3:sys-backup/myserver"
-
-## 保留的最大备份数量
-MAX_BACKUPS=5
-
-## 临时文件存放目录
-TEMP_DIR="/tmp/sys-backup"
-```
-
 
