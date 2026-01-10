@@ -177,6 +177,19 @@ verify_fail2ban_installation() {
         log_warn "缺少 sshd 过滤器配置"
         # 尝试创建基本的 sshd 过滤器
         create_sshd_filter
+    else
+        # 检查 sshd.conf 是否包含有效的 [Definition] 部分
+        if ! grep -q "^\[Definition\]" "/etc/fail2ban/filter.d/sshd.conf" 2>/dev/null; then
+            log_warn "sshd 过滤器配置不完整，缺少 [Definition] 部分，正在重新创建..."
+            rm -f /etc/fail2ban/filter.d/sshd.conf
+            create_sshd_filter
+        fi
+    fi
+
+    # 检查 common.conf 是否存在且有效
+    if [ ! -f "/etc/fail2ban/filter.d/common.conf" ]; then
+        log_warn "缺少 common.conf 过滤器，正在创建..."
+        create_sshd_filter
     fi
 
     log_info "fail2ban 安装完整性验证通过"
@@ -347,11 +360,21 @@ EOF
 cmd_install() {
     if is_fail2ban_installed; then
         log_warn "fail2ban 已经安装"
+        # 重新验证并修复配置
+        log_info "正在验证并修复配置..."
+        verify_fail2ban_installation || true
+        generate_jail_config || true
         return 0
     fi
 
     install_fail2ban || {
         log_error "fail2ban 安装失败"
+        return 1
+    }
+
+    # 验证并创建过滤器配置（在生成 jail 配置之前）
+    verify_fail2ban_installation || {
+        log_error "过滤器配置验证失败"
         return 1
     }
 
@@ -431,6 +454,13 @@ cmd_uninstall() {
 cmd_start() {
     if ! is_fail2ban_installed; then
         log_error "fail2ban 未安装"
+        return 1
+    fi
+
+    # 启动前验证配置
+    log_info "验证 fail2ban 配置..."
+    if ! verify_fail2ban_installation; then
+        log_error "配置验证失败，无法启动服务"
         return 1
     fi
 
