@@ -97,12 +97,15 @@ install_fail2ban() {
             }
             ;;
         yum)
+            # CentOS/RHEL 需要 EPEL 仓库
+            sudo yum install -y epel-release 2>/dev/null || true
             sudo yum install -y fail2ban || {
                 log_error "fail2ban 安装失败"
                 return 1
             }
             ;;
         dnf)
+            sudo dnf install -y epel-release 2>/dev/null || true
             sudo dnf install -y fail2ban || {
                 log_error "fail2ban 安装失败"
                 return 1
@@ -122,8 +125,118 @@ install_fail2ban() {
             ;;
     esac
 
+    # 验证安装完整性
+    if ! verify_fail2ban_installation; then
+        log_error "fail2ban 安装不完整，尝试重新安装..."
+        case "$pkg_manager" in
+            apt)
+                sudo apt-get install --reinstall -y fail2ban
+                ;;
+            yum|dnf)
+                sudo $pkg_manager reinstall -y fail2ban
+                ;;
+        esac
+
+        if ! verify_fail2ban_installation; then
+            log_error "fail2ban 安装仍然不完整"
+            return 1
+        fi
+    fi
+
     log_info "fail2ban 安装成功"
     return 0
+}
+
+# 验证 fail2ban 安装完整性
+verify_fail2ban_installation() {
+    local missing_files=()
+
+    # 检查关键目录和文件
+    local required_paths=(
+        "/etc/fail2ban/fail2ban.conf"
+        "/etc/fail2ban/filter.d"
+        "/etc/fail2ban/action.d"
+    )
+
+    for path in "${required_paths[@]}"; do
+        if [ ! -e "$path" ]; then
+            missing_files+=("$path")
+        fi
+    done
+
+    if [ ${#missing_files[@]} -gt 0 ]; then
+        log_warn "缺少以下关键文件/目录："
+        for file in "${missing_files[@]}"; do
+            log_warn "  - $file"
+        done
+        return 1
+    fi
+
+    # 检查 sshd 过滤器（可能是 sshd.conf 或在子目录中）
+    if [ ! -f "/etc/fail2ban/filter.d/sshd.conf" ]; then
+        log_warn "缺少 sshd 过滤器配置"
+        # 尝试创建基本的 sshd 过滤器
+        create_sshd_filter
+    fi
+
+    log_info "fail2ban 安装完整性验证通过"
+    return 0
+}
+
+# 创建基本的 sshd 过滤器（如果系统缺失）
+create_sshd_filter() {
+    log_info "正在创建 sshd 过滤器配置..."
+
+    mkdir -p /etc/fail2ban/filter.d
+
+    cat > /etc/fail2ban/filter.d/sshd.conf << 'SSHD_FILTER'
+# Fail2Ban filter for sshd
+# 基本 SSH 过滤器配置
+
+[INCLUDES]
+before = common.conf
+
+[Definition]
+_daemon = sshd
+
+failregex = ^%(__prefix_line)s(?:error: PAM: )?[aA]uthentication (?:failure|error|failed) for .* from <HOST>( via \S+)?\s*$
+            ^%(__prefix_line)s(?:error: PAM: )?User not known to the underlying authentication module for .* from <HOST>\s*$
+            ^%(__prefix_line)sFailed \S+ for (?P<cond_inv>invalid user )?(?P<user>(?P<cond_user>\S+)|(?(cond_inv)(?:(?! from ).)*?|[^:]+)) from <HOST>(?: port \d+)?(?: ssh\d*)?(?(cond_user): |(?:(?:(?! from ).)*)$)
+            ^%(__prefix_line)sROOT LOGIN REFUSED.* FROM <HOST>\s*$
+            ^%(__prefix_line)s[iI](?:llegal|nvalid) user .*? from <HOST>(?: port \d+)?(?: on \S+(?: port \d+)?)?\s*$
+            ^%(__prefix_line)sUser .+ from <HOST> not allowed because not listed in AllowUsers\s*$
+            ^%(__prefix_line)sUser .+ from <HOST> not allowed because listed in DenyUsers\s*$
+            ^%(__prefix_line)sUser .+ from <HOST> not allowed because not in any group\s*$
+            ^%(__prefix_line)srefused connect from \S+ \(<HOST>\)\s*$
+            ^%(__prefix_line)s(?:error: )?Received disconnect from <HOST>(?: port \d+)?:\s*\d+: \S+: Auth fail(?: \[preauth\])?\s*$
+            ^%(__prefix_line)s(?:error: )?maximum authentication attempts exceeded for .* from <HOST>(?: port \d+)?(?: ssh\d*)? \[preauth\]\s*$
+            ^%(__prefix_line)spam_unix\(sshd:auth\):\s+authentication failure;\s*logname=\S*\s*uid=\d*\s*euid=\d*\s*tty=\S*\s*ruser=\S*\s*rhost=<HOST>\s.*$
+
+ignoreregex =
+
+[Init]
+journalmatch = _SYSTEMD_UNIT=sshd.service + _COMM=sshd
+SSHD_FILTER
+
+    # 创建 common.conf 如果不存在
+    if [ ! -f "/etc/fail2ban/filter.d/common.conf" ]; then
+        cat > /etc/fail2ban/filter.d/common.conf << 'COMMON_FILTER'
+# Common definitions for fail2ban filters
+
+[INCLUDES]
+
+[DEFAULT]
+_daemon = \S+
+
+[Definition]
+__prefix_line = \s*(?:\S+ )?(?:@vserver_\S+ )?(?:(?:\[\d+\])?:\s+)?(?:\[\S+\]\s+)?(?:<[^.]+\.[^.]+>\s+)?(?:\S+\s+)?(?:kernel:\s+)?(?:\[ID \d+ \S+\]\s+)?(?:\S+\s+)?(?:(?:(?:\S+\s+)?%(__hostname)s|%(_daemon)s(?:\[\d+\])?)(?::\s+)?(?:\[\S+\]\s+)?)?
+
+__hostname = [\w\.-]+
+
+COMMON_FILTER
+    fi
+
+    log_info "sshd 过滤器配置已创建"
 }
 
 # 检查 fail2ban 是否已安装
