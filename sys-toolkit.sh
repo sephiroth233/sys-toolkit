@@ -205,8 +205,12 @@ uninstall_all() {
         log_info "正在卸载 fail2ban..."
         systemctl stop fail2ban 2>/dev/null || true
         systemctl disable fail2ban 2>/dev/null || true
-        if command -v apt-get &> /dev/null; then
-            apt-get remove -y fail2ban 2>/dev/null || true
+        if command -v apt &> /dev/null; then
+            apt remove --purge -y fail2ban 2>/dev/null || true
+            apt autoremove -y 2>/dev/null || true
+        elif command -v apt-get &> /dev/null; then
+            apt-get remove --purge -y fail2ban 2>/dev/null || true
+            apt-get autoremove -y 2>/dev/null || true
         elif command -v yum &> /dev/null; then
             yum remove -y fail2ban 2>/dev/null || true
         elif command -v dnf &> /dev/null; then
@@ -223,7 +227,30 @@ uninstall_all() {
         log_info "正在卸载 Sing-box..."
         systemctl stop sing-box 2>/dev/null || true
         systemctl disable sing-box 2>/dev/null || true
-        dpkg --purge sing-box 2>/dev/null || true
+
+        # 尝试使用包管理器卸载
+        if command -v dpkg &> /dev/null; then
+            dpkg --purge sing-box 2>/dev/null || {
+                log_warn "无法通过 dpkg 卸载 sing-box，尝试直接删除文件"
+            }
+        elif command -v apt &> /dev/null; then
+            apt remove --purge -y sing-box 2>/dev/null || {
+                log_warn "无法通过 apt 卸载 sing-box，尝试直接删除文件"
+            }
+        elif command -v apt-get &> /dev/null; then
+            apt-get remove --purge -y sing-box 2>/dev/null || {
+                log_warn "无法通过 apt-get 卸载 sing-box，尝试直接删除文件"
+            }
+        elif command -v yum &> /dev/null; then
+            yum remove -y sing-box 2>/dev/null || {
+                log_warn "无法通过 yum 卸载 sing-box，尝试直接删除文件"
+            }
+        elif command -v dnf &> /dev/null; then
+            dnf remove -y sing-box 2>/dev/null || {
+                log_warn "无法通过 dnf 卸载 sing-box，尝试直接删除文件"
+            }
+        fi
+
         rm -rf /etc/sing-box 2>/dev/null || true
         rm -f /usr/local/bin/sing-box 2>/dev/null || true
         systemctl daemon-reload 2>/dev/null || true
@@ -241,6 +268,12 @@ uninstall_all() {
         rm -f /usr/local/bin/snell-server 2>/dev/null || true
         rm -rf /etc/snell 2>/dev/null || true
         systemctl daemon-reload 2>/dev/null || true
+
+        # 尝试删除 Snell 用户（如果存在且没有其他用途）
+        if id "snell" &>/dev/null; then
+            log_info "注意：保留 Snell 用户，如需删除请手动执行 'userdel snell'"
+        fi
+
         log_info "Snell 已卸载"
     else
         log_info "Snell 未安装，跳过"
@@ -249,10 +282,26 @@ uninstall_all() {
     # 4. 卸载 rclone 和备份相关
     if command -v rclone &> /dev/null; then
         log_info "正在卸载 rclone..."
+
+        # 查找 rclone 安装位置
         local rclone_path=$(which rclone)
-        rm -f "$rclone_path" 2>/dev/null || true
+
+        # 删除 rclone 二进制文件
+        if [ -f "$rclone_path" ]; then
+            rm -f "$rclone_path" 2>/dev/null || true
+            log_info "已删除 rclone: $rclone_path"
+        fi
+
+        # 删除 rclone 手册页
         rm -f /usr/local/share/man/man1/rclone.1 2>/dev/null || true
-        rm -rf ~/.config/rclone 2>/dev/null || true
+
+        # 删除用户配置目录（警告但不强制删除）
+        local rclone_config_dir="$HOME/.config/rclone"
+        if [ -d "$rclone_config_dir" ]; then
+            log_info "rclone 配置目录存在: $rclone_config_dir"
+            log_info "如需删除配置，请手动执行: rm -rf $rclone_config_dir"
+        fi
+
         log_info "rclone 已卸载"
     else
         log_info "rclone 未安装，跳过"
