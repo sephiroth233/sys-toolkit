@@ -58,7 +58,9 @@ init_system() {
 
 # 检测包管理器
 detect_package_manager() {
-    if command -v apt-get &> /dev/null; then
+    if command -v apt &> /dev/null; then
+        echo "apt"
+    elif command -v apt-get &> /dev/null; then
         echo "apt"
     elif command -v yum &> /dev/null; then
         echo "yum"
@@ -87,11 +89,11 @@ install_fail2ban() {
 
     case "$pkg_manager" in
         apt)
-            sudo apt-get update || {
-                log_error "apt-get update 失败"
+            sudo apt update || {
+                log_error "apt update 失败"
                 return 1
             }
-            sudo apt-get install -y fail2ban || {
+            sudo apt install -y fail2ban || {
                 log_error "fail2ban 安装失败"
                 return 1
             }
@@ -263,9 +265,12 @@ cmd_uninstall() {
     local pkg_manager=$(detect_package_manager)
     case "$pkg_manager" in
         apt)
-            sudo apt-get remove -y fail2ban || {
+            sudo apt remove --purge -y fail2ban || {
                 log_error "卸载失败"
                 return 1
+            }
+            sudo apt autoremove -y || {
+                log_warn "自动清理失败，但fail2ban已卸载"
             }
             ;;
         yum|dnf)
