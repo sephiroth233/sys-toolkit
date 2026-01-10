@@ -518,8 +518,163 @@ check_cron() {
     return 0
 }
 
+# 检查cron服务是否运行
+check_cron_service_status() {
+    log_info "检查 cron 服务状态..."
+
+    # 检查多种可能的cron服务名称
+    local cron_services=("cron" "crond" "cronie" "dcron")
+    local service_found=false
+
+    for service in "${cron_services[@]}"; do
+        if systemctl is-active --quiet "$service" 2>/dev/null; then
+            log_success "cron 服务 ($service) 正在运行"
+            service_found=true
+            break
+        fi
+    done
+
+    if [ "$service_found" = false ]; then
+        # 尝试使用service命令检查
+        for service in "${cron_services[@]}"; do
+            if service "$service" status 2>/dev/null | grep -q "running\|active"; then
+                log_success "cron 服务 ($service) 正在运行"
+                service_found=true
+                break
+            fi
+        done
+    fi
+
+    if [ "$service_found" = false ]; then
+        log_warn "cron 服务未运行，尝试启动..."
+        # 尝试启动cron服务
+        if command -v systemctl &> /dev/null; then
+            # 尝试多个服务名
+            for service in "${cron_services[@]}"; do
+                if systemctl enable "$service" 2>/dev/null && systemctl start "$service" 2>/dev/null; then
+                    log_success "cron 服务 ($service) 启动成功"
+                    service_found=true
+                    break
+                fi
+            done
+        elif command -v service &> /dev/null; then
+            for service in "${cron_services[@]}"; do
+                if service "$service" start 2>/dev/null; then
+                    log_success "cron 服务 ($service) 启动成功"
+                    service_found=true
+                    break
+                fi
+            done
+        fi
+
+        if [ "$service_found" = false ]; then
+            log_error "无法启动 cron 服务，请手动启动"
+            log_info "尝试命令: sudo systemctl start cron 或 sudo service cron start"
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
 get_script_path() {
     readlink -f "$0"
+}
+
+# 验证cron表达式格式
+validate_cron_expression() {
+    local expr="$1"
+
+    # 检查是否包含问号（Quartz格式标志）
+    if [[ "$expr" == *"?"* ]]; then
+        log_warn "检测到Quartz调度器格式（包含?），请使用标准Linux cron格式"
+        return 1
+    fi
+
+    # 检查是否包含斜杠（但不是标准的 */n 格式）
+    if [[ "$expr" =~ / ]]; then
+        # 允许 */n 格式，但不允许 n/n 格式（除了第一个字段）
+        if [[ "$expr" =~ ^[0-9,*]+\/[0-9]+[[:space:]]+[0-9,*]+[[:space:]]+[0-9,*]+[[:space:]]+[0-9,*]+[[:space:]]+[0-9,*]+$ ]]; then
+            return 0
+        elif [[ "$expr" =~ /[0-9] ]]; then
+            log_warn "检测到非标准斜杠用法，请使用 */n 格式（如 */2 表示每2个单位）"
+            return 1
+        fi
+    fi
+
+    # 基本格式验证：应该是5个字段，用空格分隔
+    local fields_count=$(echo "$expr" | awk '{print NF}')
+    if [ "$fields_count" -ne 5 ]; then
+        log_warn "cron表达式应该有5个字段（分 时 日 月 周），当前有 $fields_count 个字段"
+        return 1
+    fi
+
+    # 尝试解析各个字段
+    local minute hour day month weekday
+    read minute hour day month weekday <<< "$expr"
+
+    # 验证分钟 (0-59)
+    if ! validate_cron_field "$minute" 0 59 "分钟"; then
+        return 1
+    fi
+
+    # 验证小时 (0-23)
+    if ! validate_cron_field "$hour" 0 23 "小时"; then
+        return 1
+    fi
+
+    # 验证日期 (1-31)
+    if ! validate_cron_field "$day" 1 31 "日期"; then
+        return 1
+    fi
+
+    # 验证月份 (1-12)
+    if ! validate_cron_field "$month" 1 12 "月份"; then
+        return 1
+    fi
+
+    # 验证星期 (0-7, 0和7都表示周日)
+    if ! validate_cron_weekday "$weekday"; then
+        return 1
+    fi
+
+    return 0
+}
+
+# 验证cron字段值
+validate_cron_field() {
+    local value="$1"
+    local min="$2"
+    local max="$3"
+    local field_name="$4"
+
+    # 允许的值: *, */n, a-b, a-b/n, 逗号分隔的列表
+    # 检查无效字符（除了数字、*、/、-、,）
+    if [[ "$value" =~ [^0-9*\/,\ -] ]]; then
+        log_warn "$field_name字段包含无效字符: $value"
+        return 1
+    fi
+
+    return 0
+}
+
+# 验证星期字段
+validate_cron_weekday() {
+    local value="$1"
+
+    # 星期字段允许 0-7（0和7都表示周日）
+    if [[ "$value" =~ [^0-9*\/,\ -] ]]; then
+        log_warn "星期字段包含无效字符: $value"
+        return 1
+    fi
+
+    # 检查是否包含大于7的数字
+    if [[ "$value" =~ [8-9] ]]; then
+        log_warn "星期字段值不能大于7: $value"
+        return 1
+    fi
+
+    return 0
 }
 
 setup_cron() {
@@ -568,9 +723,52 @@ setup_cron() {
             cron_expr="$minute $hour $day * *"
             ;;
         4)
-            echo -e "${YELLOW}cron 表达式格式: 分 时 日 月 周${RESET}"
-            echo -e "${YELLOW}示例: 0 2 * * * (每天凌晨2点)${RESET}"
-            read -p "请输入 cron 表达式: " cron_expr
+            echo -e "${CYAN}=== 自定义 Cron 表达式 ===${RESET}"
+            echo ""
+            echo -e "${YELLOW}格式: 分 时 日 月 周${RESET}"
+            echo ""
+            echo -e "${GREEN}常用预设:${RESET}"
+            echo "  1) */2 * * * *     每2分钟"
+            echo "  2) 0 1 * * *       每天凌晨1点"
+            echo "  3) 0 1 * * 1       每周一凌晨1点"
+            echo "  4) 0 1 1 * *       每月1号凌晨1点"
+            echo "  5) 0 */2 * * *     每2小时"
+            echo "  0) 返回"
+            echo ""
+            read -p "请选择预设(1-5)或直接输入自定义表达式: " choice
+
+            # 处理预设选择或自定义输入
+            case "$choice" in
+                1)
+                    cron_expr="*/2 * * * *"
+                    echo "已选择: 每2分钟"
+                    ;;
+                2)
+                    cron_expr="0 1 * * *"
+                    echo "已选择: 每天凌晨1点"
+                    ;;
+                3)
+                    cron_expr="0 1 * * 1"
+                    echo "已选择: 每周一凌晨1点"
+                    ;;
+                4)
+                    cron_expr="0 1 1 * *"
+                    echo "已选择: 每月1号凌晨1点"
+                    ;;
+                5)
+                    cron_expr="0 */2 * * *"
+                    echo "已选择: 每2小时"
+                    ;;
+                0)
+                    return
+                    ;;
+                *)
+                    # 直接输入自定义表达式
+                    if [ -n "$choice" ]; then
+                        cron_expr="$choice"
+                    fi
+                    ;;
+            esac
             ;;
         0)
             return
@@ -586,8 +784,24 @@ setup_cron() {
         return 1
     fi
 
-    # 添加 cron 任务
-    local cron_job="$cron_expr $script_path backup >> $CRON_LOG_FILE 2>&1"
+    # 验证cron表达式格式
+    if ! validate_cron_expression "$cron_expr"; then
+        log_error "cron 表达式格式错误，请使用标准格式: 分 时 日 月 周"
+        log_info "示例:"
+        log_info "  0 2 * * *       (每天凌晨2点)"
+        log_info "  0 */2 * * *     (每2小时)"
+        log_info "  0 0 1 * *       (每月1号)"
+        log_info "  0 2 * * 0       (每周日凌晨2点)"
+        return 1
+    fi
+
+    # 确保日志文件存在并设置权限
+    touch "$CRON_LOG_FILE" 2>/dev/null || true
+    chmod 644 "$CRON_LOG_FILE" 2>/dev/null || true
+
+    # 添加 cron 任务 - 设置完整环境变量并明确指定bash
+    # 注意：为脚本路径添加引号以处理可能的空格，使用bash -l确保加载完整环境
+    local cron_job="$cron_expr bash -lc '\"$script_path\" backup >> $CRON_LOG_FILE 2>&1'"
 
     # 检查是否已存在
     if crontab -l 2>/dev/null | grep -q "$script_path"; then
@@ -597,13 +811,20 @@ setup_cron() {
         (crontab -l 2>/dev/null; echo "$cron_job") | crontab -
     fi
 
+    # 检查cron服务状态
+    check_cron_service_status
+
     log_success "定时备份任务已设置: $cron_expr"
     log_info "日志文件: $CRON_LOG_FILE"
+    log_info "请检查 cron 日志: tail -f $CRON_LOG_FILE"
 }
 
 show_cron() {
     # 检查 cron 是否安装
     check_cron || return 1
+
+    # 检查cron服务状态
+    check_cron_service_status
 
     log_info "当前定时备份任务:"
     echo ""
