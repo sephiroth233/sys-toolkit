@@ -26,8 +26,9 @@ FAIL2BAN_SCRIPT_NAME="fail2ban-manager.sh"
 PROXY_SCRIPT_NAME="server-proxy.sh"
 BACKUP_SCRIPT_NAME="sys-backup-restore.sh"
 
-# 本地缓存目录
-CACHE_DIR="/tmp/sys-toolkit"
+# 本地缓存目录 - 使用持久化目录而非临时目录
+# 这样子脚本可以正确设置 cron 任务等需要稳定路径的功能
+CACHE_DIR="/usr/local/lib/sys-toolkit"
 
 # 版本信息
 VERSION="1.0.0"
@@ -67,7 +68,7 @@ check_curl() {
 download_and_run_script() {
     local script_name="$1"
     shift
-    local script_args="$@"
+    local script_args=("$@")
 
     local script_url="${REPO_BASE_URL}/${script_name}"
     local local_script="${CACHE_DIR}/${script_name}"
@@ -82,7 +83,9 @@ download_and_run_script() {
         chmod +x "$local_script"
         log_info "下载完成，正在执行..."
         echo ""
-        bash "$local_script" $script_args
+        # 直接执行缓存目录中的脚本
+        # 使用持久化目录确保 cron 任务等功能正常工作
+        bash "$local_script" "${script_args[@]}"
         return $?
     else
         log_error "下载失败: ${script_url}"
