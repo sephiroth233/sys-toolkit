@@ -97,15 +97,12 @@ install_fail2ban() {
             }
             ;;
         yum)
-            # CentOS/RHEL 需要 EPEL 仓库
-            sudo yum install -y epel-release 2>/dev/null || true
             sudo yum install -y fail2ban || {
                 log_error "fail2ban 安装失败"
                 return 1
             }
             ;;
         dnf)
-            sudo dnf install -y epel-release 2>/dev/null || true
             sudo dnf install -y fail2ban || {
                 log_error "fail2ban 安装失败"
                 return 1
@@ -125,131 +122,8 @@ install_fail2ban() {
             ;;
     esac
 
-    # 验证安装完整性
-    if ! verify_fail2ban_installation; then
-        log_error "fail2ban 安装不完整，尝试重新安装..."
-        case "$pkg_manager" in
-            apt)
-                sudo apt-get install --reinstall -y fail2ban
-                ;;
-            yum|dnf)
-                sudo $pkg_manager reinstall -y fail2ban
-                ;;
-        esac
-
-        if ! verify_fail2ban_installation; then
-            log_error "fail2ban 安装仍然不完整"
-            return 1
-        fi
-    fi
-
     log_info "fail2ban 安装成功"
     return 0
-}
-
-# 验证 fail2ban 安装完整性
-verify_fail2ban_installation() {
-    local missing_files=()
-
-    # 检查关键目录和文件
-    local required_paths=(
-        "/etc/fail2ban/fail2ban.conf"
-        "/etc/fail2ban/filter.d"
-        "/etc/fail2ban/action.d"
-    )
-
-    for path in "${required_paths[@]}"; do
-        if [ ! -e "$path" ]; then
-            missing_files+=("$path")
-        fi
-    done
-
-    if [ ${#missing_files[@]} -gt 0 ]; then
-        log_warn "缺少以下关键文件/目录："
-        for file in "${missing_files[@]}"; do
-            log_warn "  - $file"
-        done
-        return 1
-    fi
-
-    # 检查 sshd 过滤器（可能是 sshd.conf 或在子目录中）
-    if [ ! -f "/etc/fail2ban/filter.d/sshd.conf" ]; then
-        log_warn "缺少 sshd 过滤器配置"
-        # 尝试创建基本的 sshd 过滤器
-        create_sshd_filter
-    else
-        # 检查 sshd.conf 是否包含有效的 [Definition] 部分
-        if ! grep -q "^\[Definition\]" "/etc/fail2ban/filter.d/sshd.conf" 2>/dev/null; then
-            log_warn "sshd 过滤器配置不完整，缺少 [Definition] 部分，正在重新创建..."
-            rm -f /etc/fail2ban/filter.d/sshd.conf
-            create_sshd_filter
-        fi
-    fi
-
-    # 检查 common.conf 是否存在且有效
-    if [ ! -f "/etc/fail2ban/filter.d/common.conf" ]; then
-        log_warn "缺少 common.conf 过滤器，正在创建..."
-        create_sshd_filter
-    fi
-
-    log_info "fail2ban 安装完整性验证通过"
-    return 0
-}
-
-# 创建基本的 sshd 过滤器（如果系统缺失）
-create_sshd_filter() {
-    log_info "正在创建 sshd 过滤器配置..."
-
-    mkdir -p /etc/fail2ban/filter.d
-
-    cat > /etc/fail2ban/filter.d/sshd.conf << 'SSHD_FILTER'
-# Fail2Ban filter for sshd
-# 基本 SSH 过滤器配置
-
-[INCLUDES]
-before = common.conf
-
-[Definition]
-_daemon = sshd
-
-failregex = ^%(__prefix_line)s(?:error: PAM: )?[aA]uthentication (?:failure|error|failed) for .* from <HOST>( via \S+)?\s*$
-            ^%(__prefix_line)s(?:error: PAM: )?User not known to the underlying authentication module for .* from <HOST>\s*$
-            ^%(__prefix_line)sFailed \S+ for (?P<cond_inv>invalid user )?(?P<user>(?P<cond_user>\S+)|(?(cond_inv)(?:(?! from ).)*?|[^:]+)) from <HOST>(?: port \d+)?(?: ssh\d*)?(?(cond_user): |(?:(?:(?! from ).)*)$)
-            ^%(__prefix_line)sROOT LOGIN REFUSED.* FROM <HOST>\s*$
-            ^%(__prefix_line)s[iI](?:llegal|nvalid) user .*? from <HOST>(?: port \d+)?(?: on \S+(?: port \d+)?)?\s*$
-            ^%(__prefix_line)sUser .+ from <HOST> not allowed because not listed in AllowUsers\s*$
-            ^%(__prefix_line)sUser .+ from <HOST> not allowed because listed in DenyUsers\s*$
-            ^%(__prefix_line)sUser .+ from <HOST> not allowed because not in any group\s*$
-            ^%(__prefix_line)srefused connect from \S+ \(<HOST>\)\s*$
-            ^%(__prefix_line)s(?:error: )?Received disconnect from <HOST>(?: port \d+)?:\s*\d+: \S+: Auth fail(?: \[preauth\])?\s*$
-            ^%(__prefix_line)s(?:error: )?maximum authentication attempts exceeded for .* from <HOST>(?: port \d+)?(?: ssh\d*)? \[preauth\]\s*$
-            ^%(__prefix_line)spam_unix\(sshd:auth\):\s+authentication failure;\s*logname=\S*\s*uid=\d*\s*euid=\d*\s*tty=\S*\s*ruser=\S*\s*rhost=<HOST>\s.*$
-
-ignoreregex =
-
-[Init]
-journalmatch = _SYSTEMD_UNIT=sshd.service + _COMM=sshd
-SSHD_FILTER
-
-    # 创建 common.conf 如果不存在
-    if [ ! -f "/etc/fail2ban/filter.d/common.conf" ]; then
-        cat > /etc/fail2ban/filter.d/common.conf << 'COMMON_FILTER'
-# Common definitions for fail2ban filters
-
-[INCLUDES]
-
-[DEFAULT]
-_daemon = \S+
-
-[Definition]
-__prefix_line = \s*(?:\S+ )?(?:@vserver_\S+ )?(?:(?:\[\d+\])?:\s+)?(?:\[\S+\]\s+)?(?:<[^.]+\.[^.]+>\s+)?(?:\S+\s+)?(?:kernel:\s+)?(?:\[ID \d+ \S+\]\s+)?(?:\S+\s+)?(?:(?:(?:\S+\s+)?%(__hostname)s|%(_daemon)s(?:\[\d+\])?)(?::\s+)?(?:\[\S+\]\s+)?)?
-
-__hostname = [\w\.-]+
-
-COMMON_FILTER
-    fi
-
-    log_info "sshd 过滤器配置已创建"
 }
 
 # 检查 fail2ban 是否已安装
@@ -269,42 +143,18 @@ is_fail2ban_running() {
 generate_jail_config() {
     log_info "生成 jail.local 配置..."
 
-    # 确保配置目录存在
-    if [ ! -d "/etc/fail2ban" ]; then
-        log_warn "fail2ban 配置目录不存在，正在创建..."
-        mkdir -p /etc/fail2ban
-    fi
-
-    # 检查系统是否有 jail.conf（仅作为警告，不阻止配置生成）
+    # 检查系统是否有 jail.conf
     if [ ! -f "/etc/fail2ban/jail.conf" ]; then
-        log_warn "系统中不存在 /etc/fail2ban/jail.conf，将创建独立的 jail.local 配置"
+        log_error "系统中不存在 /etc/fail2ban/jail.conf"
+        log_info "请先安装 fail2ban"
+        return 1
     fi
 
-    # 检测系统使用的防火墙
-    local banaction="iptables-multiport"
-    if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
-        banaction="ufw"
-        log_info "检测到 UFW 防火墙，使用 ufw 作为禁封操作"
-    elif command -v firewall-cmd &> /dev/null && systemctl is-active --quiet firewalld; then
-        banaction="firewallcmd-ipset"
-        log_info "检测到 firewalld 防火墙，使用 firewallcmd-ipset 作为禁封操作"
-    else
-        log_info "使用默认 iptables 作为禁封操作"
-    fi
-
-    # 检测 SSH 日志文件路径
-    local ssh_logpath="/var/log/auth.log"
-    if [ -f "/var/log/secure" ]; then
-        ssh_logpath="/var/log/secure"
-        log_info "检测到 CentOS/RHEL 系统，使用 /var/log/secure"
-    fi
-
-    # 创建自定义配置
-    cat > /tmp/jail-custom.local << EOF
+    # 创建自定义配置（不复制 jail.conf，避免重复 [DEFAULT] 部分）
+    cat > /tmp/jail-custom.local << 'EOF'
 # ==================== Fail2ban 自定义配置 ====================
 # 此文件将覆盖系统默认配置
 # 修改此文件后需要重启 fail2ban 服务
-# 生成时间: $(date '+%Y-%m-%d %H:%M:%S')
 
 [DEFAULT]
 # 禁封时间（秒）；-1 表示永久禁封
@@ -314,14 +164,14 @@ findtime = 1d
 # 最大尝试次数
 maxretry = 5
 # 禁封操作方式
-banaction = ${banaction}
-# 操作组合
-action = %(action_)s
+banaction = ufw
+# 操作组合（发送邮件+日志）
+action = %(action_mwl)s
 
 # ==================== SSHd 规则 ====================
 [sshd]
 # 本地 IP 不禁封
-ignoreip = 127.0.0.1/8 ::1
+ignoreip = 127.0.0.1/8
 # 启用此规则
 enabled = true
 # 使用的过滤器
@@ -335,11 +185,11 @@ findtime = 1d
 # 禁封时间（-1 表示永久禁封）
 bantime = -1
 # 禁封操作
-banaction = ${banaction}
+banaction = ufw
+# 操作组合
+action = %(action_mwl)s
 # 日志文件路径
-logpath = ${ssh_logpath}
-# 后端检测方式
-backend = auto
+logpath = /var/log/auth.log
 
 EOF
 
@@ -351,7 +201,7 @@ EOF
     }
     rm -f /tmp/jail-custom.local
 
-    log_info "jail.local 配置生成成功: $CONFIG_FILE"
+    log_info "jail.local 配置生成成功"
     return 0
 }
 
@@ -360,21 +210,11 @@ EOF
 cmd_install() {
     if is_fail2ban_installed; then
         log_warn "fail2ban 已经安装"
-        # 重新验证并修复配置
-        log_info "正在验证并修复配置..."
-        verify_fail2ban_installation || true
-        generate_jail_config || true
         return 0
     fi
 
     install_fail2ban || {
         log_error "fail2ban 安装失败"
-        return 1
-    }
-
-    # 验证并创建过滤器配置（在生成 jail 配置之前）
-    verify_fail2ban_installation || {
-        log_error "过滤器配置验证失败"
         return 1
     }
 
@@ -454,13 +294,6 @@ cmd_uninstall() {
 cmd_start() {
     if ! is_fail2ban_installed; then
         log_error "fail2ban 未安装"
-        return 1
-    fi
-
-    # 启动前验证配置
-    log_info "验证 fail2ban 配置..."
-    if ! verify_fail2ban_installation; then
-        log_error "配置验证失败，无法启动服务"
         return 1
     fi
 
