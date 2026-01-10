@@ -143,18 +143,42 @@ is_fail2ban_running() {
 generate_jail_config() {
     log_info "生成 jail.local 配置..."
 
-    # 检查系统是否有 jail.conf
-    if [ ! -f "/etc/fail2ban/jail.conf" ]; then
-        log_error "系统中不存在 /etc/fail2ban/jail.conf"
-        log_info "请先安装 fail2ban"
-        return 1
+    # 确保配置目录存在
+    if [ ! -d "/etc/fail2ban" ]; then
+        log_warn "fail2ban 配置目录不存在，正在创建..."
+        mkdir -p /etc/fail2ban
     fi
 
-    # 创建自定义配置（不复制 jail.conf，避免重复 [DEFAULT] 部分）
-    cat > /tmp/jail-custom.local << 'EOF'
+    # 检查系统是否有 jail.conf（仅作为警告，不阻止配置生成）
+    if [ ! -f "/etc/fail2ban/jail.conf" ]; then
+        log_warn "系统中不存在 /etc/fail2ban/jail.conf，将创建独立的 jail.local 配置"
+    fi
+
+    # 检测系统使用的防火墙
+    local banaction="iptables-multiport"
+    if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
+        banaction="ufw"
+        log_info "检测到 UFW 防火墙，使用 ufw 作为禁封操作"
+    elif command -v firewall-cmd &> /dev/null && systemctl is-active --quiet firewalld; then
+        banaction="firewallcmd-ipset"
+        log_info "检测到 firewalld 防火墙，使用 firewallcmd-ipset 作为禁封操作"
+    else
+        log_info "使用默认 iptables 作为禁封操作"
+    fi
+
+    # 检测 SSH 日志文件路径
+    local ssh_logpath="/var/log/auth.log"
+    if [ -f "/var/log/secure" ]; then
+        ssh_logpath="/var/log/secure"
+        log_info "检测到 CentOS/RHEL 系统，使用 /var/log/secure"
+    fi
+
+    # 创建自定义配置
+    cat > /tmp/jail-custom.local << EOF
 # ==================== Fail2ban 自定义配置 ====================
 # 此文件将覆盖系统默认配置
 # 修改此文件后需要重启 fail2ban 服务
+# 生成时间: $(date '+%Y-%m-%d %H:%M:%S')
 
 [DEFAULT]
 # 禁封时间（秒）；-1 表示永久禁封
@@ -164,20 +188,20 @@ findtime = 1d
 # 最大尝试次数
 maxretry = 5
 # 禁封操作方式
-banaction = ufw
-# 操作组合（发送邮件+日志）
-action = %(action_mwl)s
+banaction = ${banaction}
+# 操作组合
+action = %(action_)s
 
 # ==================== SSHd 规则 ====================
 [sshd]
 # 本地 IP 不禁封
-ignoreip = 127.0.0.1/8
+ignoreip = 127.0.0.1/8 ::1
 # 启用此规则
 enabled = true
 # 使用的过滤器
 filter = sshd
 # SSHd 监听端口（如果修改了 SSH 端口，请在此修改）
-port = 22
+port = ssh
 # 最大失败次数
 maxretry = 3
 # 查找时间窗口
@@ -185,11 +209,11 @@ findtime = 1d
 # 禁封时间（-1 表示永久禁封）
 bantime = -1
 # 禁封操作
-banaction = ufw
-# 操作组合
-action = %(action_mwl)s
+banaction = ${banaction}
 # 日志文件路径
-logpath = /var/log/auth.log
+logpath = ${ssh_logpath}
+# 后端检测方式
+backend = auto
 
 EOF
 
@@ -201,7 +225,7 @@ EOF
     }
     rm -f /tmp/jail-custom.local
 
-    log_info "jail.local 配置生成成功"
+    log_info "jail.local 配置生成成功: $CONFIG_FILE"
     return 0
 }
 

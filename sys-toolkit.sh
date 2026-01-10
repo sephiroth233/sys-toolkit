@@ -139,6 +139,21 @@ get_rclone_status() {
     fi
 }
 
+get_backup_cron_status() {
+    local backup_script="${CACHE_DIR}/${BACKUP_SCRIPT_NAME}"
+    if command -v crontab &> /dev/null; then
+        if crontab -l 2>/dev/null | grep -q "$backup_script"; then
+            # 提取 cron 表达式
+            local cron_expr=$(crontab -l 2>/dev/null | grep "$backup_script" | awk '{print $1" "$2" "$3" "$4" "$5}')
+            echo -e "${GREEN}已设置${RESET} ${CYAN}($cron_expr)${RESET}"
+        else
+            echo -e "${YELLOW}未设置${RESET}"
+        fi
+    else
+        echo -e "${RED}cron未安装${RESET}"
+    fi
+}
+
 # ==================== 子脚本调用 ====================
 run_fail2ban() {
     log_info "启动 fail2ban 管理工具..."
@@ -153,6 +168,133 @@ run_proxy() {
 run_backup() {
     log_info "启动系统备份恢复工具..."
     download_and_run_script "$BACKUP_SCRIPT_NAME" "$@"
+}
+
+# ==================== 完全卸载功能 ====================
+uninstall_all() {
+    echo ""
+    echo -e "${RED}╔════════════════════════════════════════════════════════════════╗${RESET}"
+    echo -e "${RED}║                    ⚠️  完全卸载警告  ⚠️                          ║${RESET}"
+    echo -e "${RED}╚════════════════════════════════════════════════════════════════╝${RESET}"
+    echo ""
+    echo -e "${YELLOW}此操作将卸载以下所有组件并删除相关配置：${RESET}"
+    echo ""
+    echo -e "  ${CYAN}1. fail2ban${RESET} - 入侵检测和防护服务"
+    echo -e "  ${CYAN}2. Sing-box${RESET} - 网络代理服务"
+    echo -e "  ${CYAN}3. Snell${RESET}    - Snell 代理服务"
+    echo -e "  ${CYAN}4. rclone${RESET}   - 云存储同步工具"
+    echo -e "  ${CYAN}5. 定时备份任务${RESET}"
+    echo -e "  ${CYAN}6. 所有配置文件${RESET} (/etc/sys-backup, /etc/sing-box, /etc/snell, /etc/fail2ban)"
+    echo -e "  ${CYAN}7. 脚本缓存目录${RESET} (${CACHE_DIR})"
+    echo ""
+    echo -e "${RED}注意：云端备份数据不会被删除${RESET}"
+    echo ""
+    read -r -p "$(echo -e "${RED}确定要完全卸载所有组件吗？请输入 'YES' 确认: ${RESET}")" confirm
+
+    if [ "$confirm" != "YES" ]; then
+        log_warn "已取消卸载操作"
+        return 0
+    fi
+
+    echo ""
+    log_info "开始卸载所有组件..."
+    echo ""
+
+    # 1. 卸载 fail2ban
+    if command -v fail2ban-client &> /dev/null; then
+        log_info "正在卸载 fail2ban..."
+        systemctl stop fail2ban 2>/dev/null || true
+        systemctl disable fail2ban 2>/dev/null || true
+        if command -v apt-get &> /dev/null; then
+            apt-get remove -y fail2ban 2>/dev/null || true
+        elif command -v yum &> /dev/null; then
+            yum remove -y fail2ban 2>/dev/null || true
+        elif command -v dnf &> /dev/null; then
+            dnf remove -y fail2ban 2>/dev/null || true
+        fi
+        rm -rf /etc/fail2ban 2>/dev/null || true
+        log_info "fail2ban 已卸载"
+    else
+        log_info "fail2ban 未安装，跳过"
+    fi
+
+    # 2. 卸载 Sing-box
+    if command -v sing-box &> /dev/null; then
+        log_info "正在卸载 Sing-box..."
+        systemctl stop sing-box 2>/dev/null || true
+        systemctl disable sing-box 2>/dev/null || true
+        dpkg --purge sing-box 2>/dev/null || true
+        rm -rf /etc/sing-box 2>/dev/null || true
+        rm -f /usr/local/bin/sing-box 2>/dev/null || true
+        systemctl daemon-reload 2>/dev/null || true
+        log_info "Sing-box 已卸载"
+    else
+        log_info "Sing-box 未安装，跳过"
+    fi
+
+    # 3. 卸载 Snell
+    if command -v snell-server &> /dev/null; then
+        log_info "正在卸载 Snell..."
+        systemctl stop snell 2>/dev/null || true
+        systemctl disable snell 2>/dev/null || true
+        rm -f /etc/systemd/system/snell.service 2>/dev/null || true
+        rm -f /usr/local/bin/snell-server 2>/dev/null || true
+        rm -rf /etc/snell 2>/dev/null || true
+        systemctl daemon-reload 2>/dev/null || true
+        log_info "Snell 已卸载"
+    else
+        log_info "Snell 未安装，跳过"
+    fi
+
+    # 4. 卸载 rclone 和备份相关
+    if command -v rclone &> /dev/null; then
+        log_info "正在卸载 rclone..."
+        local rclone_path=$(which rclone)
+        rm -f "$rclone_path" 2>/dev/null || true
+        rm -f /usr/local/share/man/man1/rclone.1 2>/dev/null || true
+        rm -rf ~/.config/rclone 2>/dev/null || true
+        log_info "rclone 已卸载"
+    else
+        log_info "rclone 未安装，跳过"
+    fi
+
+    # 5. 删除定时备份任务
+    local backup_script="${CACHE_DIR}/${BACKUP_SCRIPT_NAME}"
+    if command -v crontab &> /dev/null; then
+        if crontab -l 2>/dev/null | grep -q "$backup_script"; then
+            log_info "正在删除定时备份任务..."
+            crontab -l 2>/dev/null | grep -v "$backup_script" | crontab -
+            log_info "定时备份任务已删除"
+        fi
+    fi
+
+    # 6. 删除备份配置和日志
+    log_info "正在删除备份配置..."
+    rm -rf /etc/sys-backup 2>/dev/null || true
+    rm -rf /var/log/sys-backup 2>/dev/null || true
+    rm -rf /tmp/sys-backup 2>/dev/null || true
+    log_info "备份配置已删除"
+
+    # 7. 删除脚本缓存目录
+    log_info "正在删除脚本缓存目录..."
+    rm -rf "$CACHE_DIR" 2>/dev/null || true
+    log_info "脚本缓存目录已删除"
+
+    echo ""
+    echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${RESET}"
+    echo -e "${GREEN}║                    卸载完成!                                    ║${RESET}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${RESET}"
+    echo ""
+    echo -e "${YELLOW}已卸载的组件：${RESET}"
+    echo -e "  - fail2ban (如已安装)"
+    echo -e "  - Sing-box (如已安装)"
+    echo -e "  - Snell (如已安装)"
+    echo -e "  - rclone (如已安装)"
+    echo -e "  - 定时备份任务"
+    echo -e "  - 所有相关配置文件"
+    echo ""
+    echo -e "${CYAN}提示：如需重新安装，请重新运行此脚本${RESET}"
+    echo ""
 }
 
 # ==================== 帮助信息 ====================
@@ -180,6 +322,7 @@ show_help() {
     echo ""
     echo -e "${PURPLE}【其他】${RESET}"
     echo "  status        - 查看所有工具状态"
+    echo "  uninstall     - 完全卸载所有组件和配置"
     echo "  help          - 显示此帮助信息"
     echo "  version       - 显示版本信息"
     echo ""
@@ -221,6 +364,7 @@ show_status() {
     echo ""
     echo -e "${PURPLE}=== 备份工具 ===${RESET}"
     echo -e "  rclone:       $(get_rclone_status)"
+    echo -e "  定时备份:     $(get_backup_cron_status)"
     echo ""
 }
 
@@ -237,6 +381,7 @@ show_menu() {
     echo -e "  Sing-box: $(get_singbox_status)"
     echo -e "  Snell:    $(get_snell_status)"
     echo -e "  rclone:   $(get_rclone_status)"
+    echo -e "  定时备份: $(get_backup_cron_status)"
     echo ""
     echo -e "${PURPLE}=== 工具选择 ===${RESET}"
     echo "1. fail2ban 管理 (入侵检测和防护)"
@@ -247,9 +392,11 @@ show_menu() {
     echo "4. 查看所有工具状态"
     echo "5. 查看帮助信息"
     echo ""
+    echo -e "${RED}99. 完全卸载 (删除所有组件和配置)${RESET}"
+    echo ""
     echo "0. 退出"
     echo ""
-    read -p "请输入选项编号: " choice
+    read -r -p "请输入选项编号: " choice
     echo ""
 }
 
@@ -278,6 +425,9 @@ main() {
                 ;;
             status)
                 show_status
+                ;;
+            uninstall)
+                uninstall_all
                 ;;
             help|--help|-h)
                 show_help
@@ -313,6 +463,9 @@ main() {
                 ;;
             5)
                 show_help
+                ;;
+            99)
+                uninstall_all
                 ;;
             0)
                 log_info "退出 sys-toolkit"
