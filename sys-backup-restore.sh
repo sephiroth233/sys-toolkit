@@ -116,6 +116,86 @@ EOF
     log_success "配置已保存到 $CONFIG_FILE"
 }
 
+# ==================== 依赖检查和安装 ====================
+check_and_install_dependencies() {
+    log_info "检查并安装系统依赖..."
+
+    local missing_deps=()
+
+    # 检查必要的命令
+    local required_commands=("curl" "tar" "jq")
+    for cmd in "${required_commands[@]}"; do
+        if ! command -v "$cmd" &> /dev/null; then
+            missing_deps+=("$cmd")
+            log_warn "$cmd 未安装"
+        fi
+    done
+
+    # 安装缺失的基础依赖
+    if [ ${#missing_deps[@]} -gt 0 ]; then
+        log_info "正在安装基础依赖: ${missing_deps[*]}"
+        if command -v apt-get &> /dev/null; then
+            apt-get update && apt-get install -y "${missing_deps[@]}" 2>/dev/null
+        elif command -v yum &> /dev/null; then
+            yum install -y "${missing_deps[@]}" 2>/dev/null
+        elif command -v dnf &> /dev/null; then
+            dnf install -y "${missing_deps[@]}" 2>/dev/null
+        elif command -v apk &> /dev/null; then
+            apk add --no-cache "${missing_deps[@]}" 2>/dev/null
+        elif command -v pacman &> /dev/null; then
+            pacman -Sy --noconfirm "${missing_deps[@]}" 2>/dev/null
+        elif command -v zypper &> /dev/null; then
+            zypper install -y "${missing_deps[@]}" 2>/dev/null
+        fi
+    fi
+
+    # 检查解压工具（unzip 或 7z 或 busybox）
+    local has_unzip=false
+    if command -v unzip &> /dev/null; then
+        has_unzip=true
+    elif command -v 7z &> /dev/null; then
+        has_unzip=true
+    elif command -v busybox &> /dev/null && busybox --help &>/dev/null; then
+        has_unzip=true
+    fi
+
+    if [ "$has_unzip" = false ]; then
+        log_warn "未找到解压工具 (unzip/7z/busybox)，正在安装 unzip..."
+        if command -v apt-get &> /dev/null; then
+            apt-get update && apt-get install -y unzip 2>/dev/null
+        elif command -v yum &> /dev/null; then
+            yum install -y unzip 2>/dev/null
+        elif command -v dnf &> /dev/null; then
+            dnf install -y unzip 2>/dev/null
+        elif command -v apk &> /dev/null; then
+            apk add --no-cache unzip 2>/dev/null
+        elif command -v pacman &> /dev/null; then
+            pacman -Sy --noconfirm unzip 2>/dev/null
+        elif command -v zypper &> /dev/null; then
+            zypper install -y unzip 2>/dev/null
+        fi
+
+        # 再次检查，如果还是失败，尝试使用 busybox
+        if ! command -v unzip &> /dev/null && command -v busybox &> /dev/null; then
+            log_info "使用 busybox unzip..."
+        fi
+    fi
+
+    # 验证关键依赖
+    if ! command -v curl &> /dev/null; then
+        log_error "curl 未安装且无法自动安装，请手动安装"
+        return 1
+    fi
+
+    if ! command -v tar &> /dev/null; then
+        log_error "tar 未安装且无法自动安装，请手动安装"
+        return 1
+    fi
+
+    log_success "依赖检查完成"
+    return 0
+}
+
 # ==================== rclone 安装和检查 ====================
 is_rclone_installed() {
     command -v rclone &> /dev/null
@@ -125,13 +205,21 @@ install_rclone() {
     log_info "正在安装 rclone..."
 
     if is_rclone_installed; then
-        local version=$(rclone version | head -n 1)
+        local version
+        version=$(rclone version | head -n 1)
         log_warn "rclone 已安装: $version"
         return 0
     fi
 
+    # 先检查并安装系统依赖
+    if ! check_and_install_dependencies; then
+        log_error "依赖安装失败，无法继续安装 rclone"
+        return 1
+    fi
+
     # 检测系统架构
-    local arch=$(uname -m)
+    local arch
+    arch=$(uname -m)
     case "$arch" in
         x86_64)
             arch="amd64"
@@ -149,22 +237,44 @@ install_rclone() {
     esac
 
     # 检测操作系统
-    local os=$(uname -s | tr '[:upper:]' '[:lower:]')
+    local os
+    os=$(uname -s | tr '[:upper:]' '[:lower:]')
 
     log_info "检测到系统: $os, 架构: $arch"
 
     # 使用官方安装脚本
     log_info "使用官方脚本安装 rclone..."
-    curl -fsSL https://rclone.org/install.sh | bash
-
-    if is_rclone_installed; then
-        local version=$(rclone version | head -n 1)
-        log_success "rclone 安装成功: $version"
-        return 0
-    else
-        log_error "rclone 安装失败"
-        return 1
+    if curl -fsSL https://rclone.org/install.sh 2>/dev/null | bash; then
+        if is_rclone_installed; then
+            local version
+            version=$(rclone version | head -n 1)
+            log_success "rclone 安装成功: $version"
+            return 0
+        fi
     fi
+
+    # 备用安装方法：直接下载二进制文件
+    log_warn "官方脚本安装失败，尝试手动下载安装..."
+    local rclone_url="https://downloads.rclone.org/v1.68.2/rclone-v1.68.2-linux-${arch}.zip"
+    local temp_zip="/tmp/rclone.zip"
+    local install_dir="/usr/local/bin"
+
+    if curl -fsSL -o "$temp_zip" "$rclone_url" 2>/dev/null; then
+        unzip -o "$temp_zip" -d /tmp/ 2>/dev/null || busybox unzip -o "$temp_zip" -d /tmp/ 2>/dev/null
+        if [ -f "/tmp/rclone-v1.68.2-linux-${arch}/rclone" ]; then
+            cp "/tmp/rclone-v1.68.2-linux-${arch}/rclone" "$install_dir/" && chmod 755 "$install_dir/rclone"
+            rm -rf "/tmp/rclone-v1.68.2-linux-${arch}" "$temp_zip"
+            if is_rclone_installed; then
+                local version
+                version=$(rclone version | head -n 1)
+                log_success "rclone 安装成功: $version"
+                return 0
+            fi
+        fi
+    fi
+
+    log_error "rclone 安装失败，请手动安装"
+    return 1
 }
 
 check_rclone() {
