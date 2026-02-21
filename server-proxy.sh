@@ -196,18 +196,30 @@ install_sing_box() {
     # 生成最小配置文件（初次安装不包含节点信息）
     cat > "${CONFIG_FILE}" << EOF
 {
-  "log": {
-    "output": "stdout",
-    "level": "info",
-    "timestamp": true
-  },
-  "dns": {},
-  "outbounds": [
-    {
-      "tag": "direct",
-      "type": "direct"
-    }
-  ]
+    "log": {
+        "output": "stdout",
+        "level": "info",
+        "timestamp": true
+    },
+    "dns": {},
+    "route": {
+        "rules": [
+            {
+                "ip_is_private": true,
+                "outbound": "block"
+            }
+        ]
+    },
+    "outbounds": [
+        {
+            "tag": "direct",
+            "type": "direct"
+        },
+        {
+            "tag": "block",
+            "type": "block"
+        }
+    ],
 }
 EOF
 
