@@ -2,7 +2,7 @@
 
 # ============================================================
 # sys-toolkit.sh - 系统工具集统一入口
-# 功能：统一管理和调用 fail2ban、网络代理、系统备份等脚本
+# 功能：统一管理和调用 fail2ban、网络代理、系统备份、Docker 等脚本
 # 用法：sudo ./sys-toolkit.sh [命令]
 # ============================================================
 
@@ -25,6 +25,8 @@ REPO_BASE_URL="https://raw.githubusercontent.com/sephiroth233/sys-toolkit/master
 FAIL2BAN_SCRIPT_NAME="fail2ban-manager.sh"
 PROXY_SCRIPT_NAME="server-proxy.sh"
 BACKUP_SCRIPT_NAME="sys-backup-restore.sh"
+DOCKER_SCRIPT_NAME="docker-install.sh"
+
 
 # 本地缓存目录 - 使用持久化目录而非临时目录
 # 这样子脚本可以正确设置 cron 任务等需要稳定路径的功能
@@ -154,6 +156,15 @@ get_backup_cron_status() {
     fi
 }
 
+
+get_docker_status() {
+    if command -v docker &> /dev/null; then
+        echo -e "${GREEN}已安装${RESET}"
+    else
+        echo -e "${RED}未安装${RESET}"
+    fi
+}
+
 # ==================== 子脚本调用 ====================
 run_fail2ban() {
     log_info "启动 fail2ban 管理工具..."
@@ -168,6 +179,12 @@ run_proxy() {
 run_backup() {
     log_info "启动系统备份恢复工具..."
     download_and_run_script "$BACKUP_SCRIPT_NAME" "$@"
+}
+
+
+run_docker() {
+    log_info "启动 Docker 安装工具..."
+    download_and_run_script "$DOCKER_SCRIPT_NAME" "$@"
 }
 
 # ==================== 完全卸载功能 ====================
@@ -360,6 +377,8 @@ show_help() {
     echo "  fail2ban      - 启动 fail2ban 管理工具"
     echo "  proxy         - 启动网络代理配置工具 (Sing-box/Snell)"
     echo "  backup        - 启动系统备份恢复工具"
+    echo "  docker        - 启动 Docker 安装工具"
+
     echo ""
     echo -e "${PURPLE}【快捷命令】${RESET}"
     echo "  fail2ban install    - 安装 fail2ban"
@@ -368,6 +387,8 @@ show_help() {
     echo "  backup backup       - 立即执行备份"
     echo "  backup restore      - 恢复备份"
     echo "  backup list         - 查看备份列表"
+    echo "  docker              - 进入 Docker 安装菜单"
+
     echo ""
     echo -e "${PURPLE}【其他】${RESET}"
     echo "  status        - 查看所有工具状态"
@@ -392,6 +413,8 @@ show_help() {
     echo "  仓库地址:  ${REPO_BASE_URL}"
     echo "  fail2ban:  ${FAIL2BAN_SCRIPT_NAME}"
     echo "  proxy:     ${PROXY_SCRIPT_NAME}"
+    echo "  docker:    ${DOCKER_SCRIPT_NAME}"
+
     echo "  backup:    ${BACKUP_SCRIPT_NAME}"
     echo "  缓存目录:  ${CACHE_DIR}"
     echo ""
@@ -415,6 +438,10 @@ show_status() {
     echo -e "  rclone:       $(get_rclone_status)"
     echo -e "  定时备份:     $(get_backup_cron_status)"
     echo ""
+    echo -e "${PURPLE}=== 开发环境 ===${RESET}"
+    echo -e "  Docker:       $(get_docker_status)"
+
+    echo ""
 }
 
 # ==================== 主菜单 ====================
@@ -431,15 +458,18 @@ show_menu() {
     echo -e "  Snell:    $(get_snell_status)"
     echo -e "  rclone:   $(get_rclone_status)"
     echo -e "  定时备份: $(get_backup_cron_status)"
+    echo -e "  Docker:   $(get_docker_status)"
+
     echo ""
     echo -e "${PURPLE}=== 工具选择 ===${RESET}"
     echo "1. fail2ban 管理 (入侵检测和防护)"
     echo "2. 网络代理配置 (Sing-box/Snell)"
     echo "3. 系统备份恢复 (rclone)"
+    echo "4. Docker 安装 (Docker & Docker Compose)"
     echo ""
     echo -e "${PURPLE}=== 其他选项 ===${RESET}"
-    echo "4. 查看所有工具状态"
-    echo "5. 查看帮助信息"
+    echo "5. 查看所有工具状态"
+    echo "6. 查看帮助信息"
     echo ""
     echo -e "${RED}99. 完全卸载 (删除所有组件和配置)${RESET}"
     echo ""
@@ -471,6 +501,10 @@ main() {
             backup)
                 shift
                 run_backup "$@"
+                ;;
+            docker)
+                shift
+                run_docker "$@"
                 ;;
             status)
                 show_status
@@ -508,9 +542,12 @@ main() {
                 run_backup
                 ;;
             4)
-                show_status
+                run_docker
                 ;;
             5)
+                show_status
+                ;;
+            6)
                 show_help
                 ;;
             99)
