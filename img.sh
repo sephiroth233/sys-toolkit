@@ -33,24 +33,23 @@ CONFIG_FILE="${CONFIG_DIR}/config"
 
 _confirm() {
   local prompt="$1" ans
-  printf '%s [y/N] ' "$prompt"
+  printf '%s [y/N] ' "$prompt" >&2
   read -r ans
   case "$ans" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
 }
 
 _read() {
   local prompt="$1" default="$2" ans
-  printf '%s [%s]: ' "$prompt" "$default"
+  printf '%s [%s]: ' "$prompt" "$default" >&2
   read -r ans
   echo "${ans:-$default}"
 }
 
 _read_secret() {
   local prompt="$1" ans
-  printf '%s: ' "$prompt"
+  printf '%s: ' "$prompt" >&2
   read -rs ans
   echo "$ans"
-  echo >&2   # newline after hidden input
 }
 
 _load_config() {
