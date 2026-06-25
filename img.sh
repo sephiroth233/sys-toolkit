@@ -1,0 +1,498 @@
+#!/usr/bin/env bash
+
+_img_is_sourced=0
+if [[ -n "${ZSH_EVAL_CONTEXT:-}" && "${ZSH_EVAL_CONTEXT}" == *:file ]]; then
+  _img_is_sourced=1
+elif [[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "$0" ]]; then
+  _img_is_sourced=1
+fi
+
+# Keep strict mode for direct script execution, but do not leak it into
+# interactive shells that source this file from ~/.zshrc.
+if [[ "$_img_is_sourced" -eq 0 ]]; then
+  set -euo pipefail
+fi
+
+# ============================================================
+#  img — generic image hosting toolkit (S3 / Cloudflare R2 / …)
+# ============================================================
+#  Setup:   img setup           guided install + configure
+#  Upload:  img up   <file...>  upload files → public URL
+#           img pup             paste & upload clipboard image
+#  Delete:  img rm   <url|key>  delete remote image(s)
+#
+#  Typora custom-uploader:  /path/to/img.sh
+# ============================================================
+
+CONFIG_DIR="${HOME}/.config/img-r2"
+CONFIG_FILE="${CONFIG_DIR}/config"
+
+# ---- helpers ----
+
+# All helpers use printf+read (NOT read -p) for zsh/bash compatibility.
+
+_confirm() {
+  local prompt="$1" ans
+  printf '%s [y/N] ' "$prompt"
+  read -r ans
+  case "$ans" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+}
+
+_read() {
+  local prompt="$1" default="$2" ans
+  printf '%s [%s]: ' "$prompt" "$default"
+  read -r ans
+  echo "${ans:-$default}"
+}
+
+_read_secret() {
+  local prompt="$1" ans
+  printf '%s: ' "$prompt"
+  read -rs ans
+  echo "$ans"
+  echo >&2   # newline after hidden input
+}
+
+_load_config() {
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "❌ 未找到配置，请先运行: img setup" >&2
+    return 1
+  fi
+  # shellcheck source=/dev/null
+  source "$CONFIG_FILE"
+}
+
+_ensure_aws() {
+  if command -v aws &>/dev/null; then
+    return 0
+  fi
+  echo "⚠️  未检测到 AWS CLI，尝试自动安装..."
+  if ! command -v brew &>/dev/null; then
+    echo "❌ 需要 Homebrew，请先安装：https://brew.sh"
+    return 1
+  fi
+  brew install awscli || {
+    echo "❌ 安装失败，请手动执行：brew install awscli"
+    return 1
+  }
+  echo "✅ AWS CLI 安装完成"
+}
+
+_ensure_profile() {
+  if aws --profile "$PROFILE" configure list &>/dev/null 2>&1; then
+    return 0
+  fi
+  echo "❌ AWS profile [${PROFILE}] 未配置" >&2
+  echo "   请运行: img setup" >&2
+  return 1
+}
+
+# ============================================================
+#  img setup  — interactive guided setup
+# ============================================================
+
+_img_setup() {
+  echo
+  echo "╔══════════════════════════════════════════════╗"
+  echo "║       img  — 图床工具 · 初始化配置           ║"
+  echo "╚══════════════════════════════════════════════╝"
+  echo
+
+  # Step 1 — AWS CLI
+  echo "── 1/7  环境检查 ──"
+  if command -v aws &>/dev/null; then
+    echo "✅ AWS CLI: $(aws --version 2>&1 | head -1)"
+  else
+    echo "⚠️  未检测到 AWS CLI"
+    if _confirm "是否自动安装 AWS CLI？"; then
+      _ensure_aws
+    else
+      echo "请手动执行: brew install awscli"
+      return 1
+    fi
+  fi
+  echo
+
+  # Step 2 — credentials
+  echo "── 2/7  AWS Profile 名称 ──"
+  echo "  本地 AWS CLI 的配置别名，仅在本机使用。"
+  echo "  如果只配一个 R2 账号，用默认值即可。"
+  echo
+
+  local profile bucket endpoint public_url access_key secret_key
+  profile="$(_read "profile 名称" "${PROFILE:-r2-typora}")"
+  echo
+
+  echo "── 3/7  Access Key ID ──"
+  echo "  在 Cloudflare 控制台 → R2 → 管理访问密钥 中获取。"
+  echo "  格式类似: 5b09df406c71c50d59b8e938ceae38c9"
+  echo
+
+  access_key="$(_read_secret "Access Key ID")"
+  echo
+
+  echo "── 4/7  Secret Access Key ──"
+  echo "  与 Access Key ID 配对，创建密钥时仅显示一次。"
+  echo "  输入时无回显，粘贴后直接回车。"
+  echo
+
+  secret_key="$(_read_secret "Secret Access Key")"
+  echo
+
+  echo "── 5/7  Endpoint URL ──"
+  echo "  R2 的 S3 兼容 API 地址。"
+  echo "  格式: https://<账户ID>.r2.cloudflarestorage.com"
+  echo "  账户ID 在 Cloudflare → R2 概览页 可查。"
+  echo
+
+  endpoint="$(_read "Endpoint URL" "${ENDPOINT:-https://<account-id>.r2.cloudflarestorage.com}")"
+  echo
+
+  echo "── 6/7  Bucket + 域名 ──"
+  echo "  Bucket 名称（R2 存储桶名）。"
+  echo "  公开域名即图片的最终访问地址前缀。"
+  echo
+
+  bucket="$(_read "Bucket 名称" "${BUCKET:-images}")"
+  public_url="$(_read "公开访问域名" "${PUBLIC_BASE_URL:-https://your.domain}")"
+  echo
+
+  echo "  即将配置以下信息："
+  echo "    profile:      ${profile}"
+  echo "    endpoint:     ${endpoint}"
+  echo "    bucket:       ${bucket}"
+  echo "    public URL:   ${public_url}"
+  echo "    access key:   ${access_key:0:4}****${access_key: -4}"
+  echo
+
+  if ! _confirm "确认写入配置？"; then
+    echo "已取消。"
+    return 0
+  fi
+
+  # Write AWS profile
+  aws configure set region auto     --profile "$profile"
+  aws configure set output json     --profile "$profile"
+  aws configure set aws_access_key_id     "$access_key"  --profile "$profile"
+  aws configure set aws_secret_access_key "$secret_key"  --profile "$profile"
+  echo "✅ AWS profile [${profile}] 已写入 ~/.aws/credentials"
+
+  # Write img config
+  mkdir -p "$CONFIG_DIR"
+  cat > "$CONFIG_FILE" <<EOF
+# img-r2 config — generated by img setup
+PROFILE='${profile}'
+BUCKET='${bucket}'
+ENDPOINT='${endpoint}'
+PUBLIC_BASE_URL='${public_url}'
+EOF
+  chmod 600 "$CONFIG_FILE"
+  echo "✅ 配置文件已写入 ${CONFIG_FILE}"
+  echo
+
+  # Step 3 — test
+  echo "── 7/7  连通性测试 ──"
+  echo "  正在测试上传..."
+  local test_file="${CONFIG_DIR}/.test-upload.png"
+  # Generate a tiny 1px PNG
+  printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82' > "$test_file"
+
+  local url
+  if url="$(bash "$0" "$test_file" 2>&1)"; then
+    echo "  ✅ 上传成功: ${url}"
+    rm -f "$test_file"
+
+    # Clean up
+    local key="${url#${public_url}/}"
+    aws --profile "$profile" --endpoint-url "$endpoint" s3 rm "s3://${bucket}/${key}" >/dev/null 2>&1 || true
+    echo "  ✅ 删除测试文件成功"
+  else
+    echo "  ❌ 测试失败: $url"
+    rm -f "$test_file"
+    echo "  请检查凭证和网络后重试: img setup"
+    return 1
+  fi
+  echo
+  echo "╔══════════════════════════════════════════════╗"
+  echo "║           配置完成，一切就绪 ✅               ║"
+  echo "╚══════════════════════════════════════════════╝"
+  echo
+  echo "  快速上手:"
+  echo "    img up   cat.png      上传文件"
+  echo "    img pup               上传剪贴板图片"
+  echo "    img rm   <url|key>    删除远程图片"
+  echo
+
+  # Step 4 — auto-add to shell
+  local self
+  self="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/$(basename "${BASH_SOURCE[0]:-$0}")"
+  echo "── 可选：绑定到终端 ──"
+  if grep -qF "source ${self}" "${HOME}/.zshrc" 2>/dev/null; then
+    echo "  ✅ ~/.zshrc 已包含: source ${self}"
+  elif [[ -f "${HOME}/.zshrc" ]]; then
+    if _confirm "是否将 img 命令添加到 ~/.zshrc？"; then
+      echo "source ${self}" >> "${HOME}/.zshrc"
+      echo "  ✅ 已写入，执行 source ~/.zshrc 后生效"
+    else
+      echo "  跳过。你可以稍后手动添加："
+      echo "    echo \"source ${self}\" >> ~/.zshrc"
+    fi
+  fi
+  echo
+}
+
+# ============================================================
+#  core operations
+# ============================================================
+
+_img_upload() {
+  _ensure_aws
+  _load_config
+  _ensure_profile
+
+  for file in "$@"; do
+    local name ext key uuid
+    name="$(basename "$file")"
+    ext=""
+
+    if [[ "$name" == *.* && "$name" != .* ]]; then
+      ext=".${name##*.}"
+    fi
+
+    uuid="$(uuidgen | tr '[:upper:]' '[:lower:]' | tr -d '-')"
+    key="$(date +%Y/%m/%d)/${uuid}${ext}"
+
+    aws --profile "$PROFILE" \
+      --endpoint-url "$ENDPOINT" \
+      s3 cp "$file" "s3://${BUCKET}/${key}" >/dev/null
+
+    echo "${PUBLIC_BASE_URL}/${key}"
+  done
+}
+
+_img_delete() {
+  _ensure_aws
+  _load_config
+  _ensure_profile
+
+  for arg in "$@"; do
+    local key
+    if [[ "$arg" == http* ]]; then
+      key="${arg#${PUBLIC_BASE_URL}/}"
+    else
+      key="$arg"
+    fi
+
+    echo "🗑  Deleting s3://${BUCKET}/${key} ..."
+    aws --profile "$PROFILE" \
+      --endpoint-url "$ENDPOINT" \
+      s3 rm "s3://${BUCKET}/${key}"
+    echo "✅ Deleted: ${key}"
+  done
+}
+
+_img_paste() {
+  local tmpfile="/tmp/clipboard-upload-$(uuidgen | tr -d '-').png"
+  osascript -e "
+    set theFile to POSIX file \"$tmpfile\"
+    try
+      set fp to open for access theFile with write permission
+      set eof fp to 0
+      write (the clipboard as «class PNGf») to fp
+      close access fp
+    on error
+      try
+        close access fp
+      end try
+      set fp to open for access theFile with write permission
+      set eof fp to 0
+      write (the clipboard as TIFF picture) to fp
+      close access fp
+    end try
+  " 2>/dev/null || {
+    echo "❌ 剪贴板中没有图片"
+    rm -f "$tmpfile"
+    return 1
+  }
+  echo "📋 正在上传剪贴板图片..."
+  _img_upload "$tmpfile"
+  rm -f "$tmpfile"
+}
+
+# ============================================================
+#  img uninstall  — remove everything
+# ============================================================
+
+_img_uninstall() {
+  local self profile
+  self="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/$(basename "${BASH_SOURCE[0]:-$0}")"
+
+  echo
+  echo "╔══════════════════════════════════════════════╗"
+  echo "║          img  — 卸载                          ║"
+  echo "╚══════════════════════════════════════════════╝"
+  echo
+  echo "  此操作将移除 img 工具链的全部组件。"
+  echo
+
+  if ! _confirm "确认开始卸载？"; then
+    echo "已取消。"
+    return 0
+  fi
+
+  # 1. AWS profile
+  if [[ -f "$CONFIG_FILE" ]]; then
+    _load_config 2>/dev/null && profile="$PROFILE" || profile="r2-typora"
+  else
+    profile="r2-typora"
+  fi
+
+  echo
+  echo "── 1/4  AWS 凭证 ──"
+  if aws --profile "$profile" configure list &>/dev/null 2>&1; then
+    if _confirm "  删除 AWS profile [${profile}]？"; then
+      local tmpfile
+      if [[ -f "${HOME}/.aws/credentials" ]]; then
+        tmpfile="${HOME}/.aws/credentials.tmp.$$"
+        awk -v profile="$profile" '
+          BEGIN { skip=0 }
+          $0 ~ "^\\[" profile "\\]" { skip=1; next }
+          skip && /^\[/  { skip=0 }
+          !skip { print }
+        ' "${HOME}/.aws/credentials" > "$tmpfile" && mv "$tmpfile" "${HOME}/.aws/credentials"
+        echo "  ✅ 已从 ~/.aws/credentials 移除"
+      fi
+      if [[ -f "${HOME}/.aws/config" ]]; then
+        tmpfile="${HOME}/.aws/config.tmp.$$"
+        awk -v profile="$profile" '
+          BEGIN { skip=0 }
+          $0 ~ "\\[profile " profile "\\]" { skip=1; next }
+          skip && /^\[/  { skip=0 }
+          !skip { print }
+        ' "${HOME}/.aws/config" > "$tmpfile" && mv "$tmpfile" "${HOME}/.aws/config"
+        echo "  ✅ 已从 ~/.aws/config 移除"
+      fi
+    else
+      echo "  跳过。"
+    fi
+  else
+    echo "  ℹ️  未检测到 profile [${profile}]，跳过。"
+  fi
+
+  # 2. Config file
+  echo
+  echo "── 2/4  配置文件 ──"
+  if [[ -d "$CONFIG_DIR" ]]; then
+    if _confirm "  删除配置目录 ${CONFIG_DIR}？"; then
+      rm -rf "$CONFIG_DIR"
+      echo "  ✅ 已删除 ${CONFIG_DIR}"
+    else
+      echo "  跳过。"
+    fi
+  else
+    echo "  ℹ️  未找到 ${CONFIG_DIR}，跳过。"
+  fi
+
+  # 3. ~/.zshrc source line
+  echo
+  echo "── 3/4  终端绑定 ──"
+  if [[ -f "${HOME}/.zshrc" ]] && grep -qF "source ${self}" "${HOME}/.zshrc" 2>/dev/null; then
+    if _confirm "  从 ~/.zshrc 移除 source 行？"; then
+      local tmpfile="${HOME}/.zshrc.tmp.$$"
+      grep -vF "source ${self}" "${HOME}/.zshrc" > "$tmpfile" && mv "$tmpfile" "${HOME}/.zshrc"
+      echo "  ✅ 已从 ~/.zshrc 移除"
+    else
+      echo "  跳过。"
+    fi
+  else
+    echo "  ℹ️  ~/.zshrc 中未找到相关行，跳过。"
+  fi
+
+  # 4. AWS CLI + script
+  echo
+  echo "── 4/4  可选清理 ──"
+  if command -v aws &>/dev/null; then
+    if _confirm "  卸载 AWS CLI（brew uninstall awscli）？"; then
+      brew uninstall awscli --force 2>/dev/null || brew uninstall awscli 2>/dev/null || {
+        echo "  ⚠️  卸载失败，请手动执行: brew uninstall awscli"
+      }
+      echo "  ✅ AWS CLI 已卸载"
+    else
+      echo "  跳过。"
+    fi
+  fi
+
+  if _confirm "  删除脚本文件 ${self}？"; then
+    echo "  ✅ 脚本将被删除。再见 👋"
+    rm -f "$self"
+    echo
+    return 0
+  else
+    echo "  跳过。"
+  fi
+
+  echo
+  echo "╔══════════════════════════════════════════════╗"
+  echo "║             卸载完成                          ║"
+  echo "╚══════════════════════════════════════════════╝"
+  echo
+}
+
+# ============================================================
+#  dispatch
+# ============================================================
+
+img() {
+  if [[ $# -eq 0 ]]; then
+    echo "Usage: img <setup|up|pup|rm|uninstall> ..."
+    echo "  img setup              初始化配置"
+    echo "  img up    <file...>    上传图片文件"
+    echo "  img pup                上传剪贴板图片"
+    echo "  img rm    <url|key...> 删除远程图片"
+    echo "  img uninstall          彻底卸载"
+    return 1
+  fi
+  local cmd="${1:-}"
+  shift
+
+  case "$cmd" in
+    setup)
+      _img_setup
+      ;;
+    up)
+      if [[ $# -eq 0 ]]; then
+        echo "Usage: img up <file>..."
+        return 1
+      fi
+      _img_upload "$@"
+      ;;
+    pup)
+      _img_paste
+      ;;
+    rm)
+      if [[ $# -eq 0 ]]; then
+        echo "Usage: img rm <url|key>..."
+        return 1
+      fi
+      _img_delete "$@"
+      ;;
+    uninstall)
+      _img_uninstall
+      ;;
+    *)
+      echo "Usage: img <setup|up|pup|rm|uninstall> ..."
+      echo "  img setup              初始化配置"
+      echo "  img up    <file...>    上传图片文件"
+      echo "  img pup                上传剪贴板图片"
+      echo "  img rm    <url|key...> 删除远程图片"
+      echo "  img uninstall          彻底卸载"
+      return 1
+      ;;
+  esac
+}
+
+# ---- direct execution mode (called by Typora) ----
+if [[ "$_img_is_sourced" -eq 0 ]]; then
+  _img_upload "$@"
+fi
+unset _img_is_sourced
