@@ -1,5 +1,17 @@
 #!/usr/bin/env bash
-set -euo pipefail
+
+_mihomo_daemon_is_sourced=0
+if [[ -n "${ZSH_EVAL_CONTEXT:-}" && "${ZSH_EVAL_CONTEXT}" == *:file ]]; then
+  _mihomo_daemon_is_sourced=1
+elif [[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "$0" ]]; then
+  _mihomo_daemon_is_sourced=1
+fi
+
+# Keep strict mode for direct script execution, but do not leak it into
+# interactive shells if this file is accidentally sourced.
+if [[ "${_mihomo_daemon_is_sourced}" -eq 0 ]]; then
+  set -euo pipefail
+fi
 
 LABEL="com.mihomo.daemon"
 CONFIG_DIR="/etc/mihomo"
@@ -30,7 +42,9 @@ cleanup_temp_dir() {
   fi
 }
 
-trap cleanup_temp_dir EXIT
+if [[ "${_mihomo_daemon_is_sourced}" -eq 0 ]]; then
+  trap cleanup_temp_dir EXIT
+fi
 
 usage() {
   cat <<EOF
@@ -681,4 +695,7 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${_mihomo_daemon_is_sourced}" -eq 0 ]]; then
+  main "$@"
+fi
+unset _mihomo_daemon_is_sourced
