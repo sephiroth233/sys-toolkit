@@ -11,6 +11,7 @@
 - [Docker 安装](#docker-安装)
 - [Mihomo 安装 (macOS)](#mihomo-安装-macos)
 - [WSL + Docker 配置](#wsl--docker-配置)
+- [图床工具 (img)](#图床工具-img)
 - [Windows 工具](#windows-工具)
 
 ## 统一入口
@@ -96,6 +97,28 @@ sudo ./wsl-docker-setup.sh
 ```
 
 要求：WSL (Ubuntu)。
+
+## 图床工具 (img)
+
+通用 S3 / Cloudflare R2 图床工具箱，支持上传、剪贴板粘贴、删除，也可作为 Typora 自定义上传器。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sephiroth233/sys-toolkit/master/img.sh -o img.sh
+chmod +x img.sh
+
+# 方式一：直接执行（Typora 兼容）
+./img.sh cat.png
+
+# 方式二：source 后使用 img 子命令（交互更友好）
+source img.sh
+img setup               # 引导式初始化配置
+img up    cat.png       # 上传文件 → 输出公开 URL
+img pup                 # 上传剪贴板图片 (macOS)
+img rm    <url|key>     # 删除远程图片
+img uninstall           # 彻底卸载
+```
+
+要求：macOS，Homebrew（用于自动安装 AWS CLI），S3 兼容存储（Cloudflare R2 / AWS S3 等）。
 
 ## Windows 工具
 
