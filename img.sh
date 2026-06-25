@@ -246,9 +246,9 @@ EOF
 # ============================================================
 
 _img_upload() {
-  _ensure_aws
-  _load_config
-  _ensure_profile
+  _ensure_aws || return 1
+  _load_config || return 1
+  _ensure_profile || return 1
 
   for file in "$@"; do
     local name ext key uuid
@@ -271,9 +271,9 @@ _img_upload() {
 }
 
 _img_delete() {
-  _ensure_aws
-  _load_config
-  _ensure_profile
+  _ensure_aws || return 1
+  _load_config || return 1
+  _ensure_profile || return 1
 
   for arg in "$@"; do
     local key
