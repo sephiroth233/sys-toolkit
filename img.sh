@@ -162,6 +162,7 @@ _img_setup() {
   echo "    bucket:       ${bucket}"
   echo "    public URL:   ${public_url}"
   echo "    access key:   ${access_key:0:4}****${access_key: -4}"
+  echo "    secret key:   ${secret_key:0:4}****${secret_key: -4}"
   echo
 
   if ! _confirm "确认写入配置？"; then
