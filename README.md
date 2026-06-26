@@ -10,7 +10,6 @@
 - [fail2ban 管理](#fail2ban-管理)
 - [Docker 安装](#docker-安装)
 - [Mihomo 安装 (macOS)](#mihomo-安装-macos)
-- [Mihomo 守护进程 (macOS)](#mihomo-守护进程-macos)
 - [WSL + Docker 配置](#wsl--docker-配置)
 - [图床工具 (img)](#图床工具-img)
 - [Windows 工具](#windows-工具)
@@ -86,30 +85,6 @@ sudo ./mihomo-install.sh install
 ```
 
 要求：macOS，sudo 权限。
-
-## Mihomo 守护进程 (macOS)
-
-macOS 上 mihomo 的 LaunchDaemon 服务管理器，支持安装、启停、日志查看、配置切换、内核更新。
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/sephiroth233/sys-toolkit/master/mihomo-daemon.sh -o mihomo-daemon.sh
-chmod +x mihomo-daemon.sh
-
-sudo ./mihomo-daemon.sh install [--config /path/to/config.yaml] [--bin /path/to/mihomo]
-sudo ./mihomo-daemon.sh start
-sudo ./mihomo-daemon.sh stop
-sudo ./mihomo-daemon.sh restart
-sudo ./mihomo-daemon.sh status
-sudo ./mihomo-daemon.sh logs
-sudo ./mihomo-daemon.sh config-use /path/to/config.yaml
-sudo ./mihomo-daemon.sh config-path
-sudo ./mihomo-daemon.sh core-install
-sudo ./mihomo-daemon.sh core-update
-sudo ./mihomo-daemon.sh core-version
-sudo ./mihomo-daemon.sh uninstall
-```
-
-要求：macOS，sudo 权限。详细文档见 [`mihomo-daemon.md`](mihomo-daemon.md)。
 
 ## WSL + Docker 配置
 
