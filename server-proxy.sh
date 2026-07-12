@@ -201,8 +201,19 @@ install_sing_box() {
         "level": "info",
         "timestamp": true
     },
-    "dns": {},
+    "dns": {
+        "servers": [
+            {
+                "type": "local",
+                "tag": "local-ipv4"
+            }
+        ]
+    },
     "route": {
+        "default_domain_resolver": {
+            "server": "local-ipv4",
+            "strategy": "ipv4_only"
+        },
         "rules": [
             {
                 "ip_is_private": true,
@@ -213,13 +224,17 @@ install_sing_box() {
     "outbounds": [
         {
             "tag": "direct",
-            "type": "direct"
+            "type": "direct",
+            "domain_resolver": {
+                "server": "local-ipv4",
+                "strategy": "ipv4_only"
+            }
         },
         {
             "tag": "block",
             "type": "block"
         }
-    ],
+    ]
 }
 EOF
 
@@ -393,9 +408,9 @@ generate_snell_config() {
     # 生成 Snell 配置文件
     cat > "${SNELL_CONFIG_FILE}" << EOF
 [snell-server]
-listen = ::0:${port}
+listen = 0.0.0.0:${port}
 psk = ${psk}
-ipv6 = true
+ipv6 = false
 EOF
 
     # 参数直接从 snell-server.conf 读取
@@ -730,7 +745,7 @@ generate_node_config() {
             '{
                 type: "hysteria2",
                 tag: "hysteria-in",
-                listen: "::",
+                listen: "0.0.0.0",
                 listen_port: ($port | tonumber),
                 users: [{password: $password}],
                 masquerade: "https://bing.com",
@@ -761,7 +776,7 @@ generate_node_config() {
             '{
                 type: "shadowsocks",
                 tag: "shadowsocks-in",
-                listen: "::",
+                listen: "0.0.0.0",
                 listen_port: ($port | tonumber),
                 method: "2022-blake3-aes-256-gcm",
                 password: $ss_password,
@@ -788,7 +803,7 @@ generate_node_config() {
             '{
                 type: "vless",
                 tag: "vless-in",
-                listen: "::",
+                listen: "0.0.0.0",
                 listen_port: ($port | tonumber),
                 users: [{
                     uuid: $uuid,
@@ -831,7 +846,7 @@ generate_node_config() {
             '{
                 type: "anytls",
                 tag: "anytls-in",
-                listen: "::",
+                listen: "0.0.0.0",
                 listen_port: ($port | tonumber),
                 users: [{
                     name: $uuid,
@@ -864,7 +879,7 @@ generate_node_config() {
             '{
                 type: "socks",
                 tag: "socks-in",
-                listen: "::",
+                listen: "0.0.0.0",
                 listen_port: ($port | tonumber),
                 users: [{
                     username: $username,
@@ -890,7 +905,7 @@ generate_node_config() {
             '{
                 type: "http",
                 tag: "http-in",
-                listen: "::",
+                listen: "0.0.0.0",
                 listen_port: ($port | tonumber),
                 users: [{
                     username: $username,
@@ -1537,7 +1552,7 @@ add_direct_config() {
         '{
             tag: $tag,
             type: "direct",
-            listen: "::",
+            listen: "0.0.0.0",
             listen_port: ($port | tonumber),
             override_port: ($override_port | tonumber),
             override_address: $override_address
