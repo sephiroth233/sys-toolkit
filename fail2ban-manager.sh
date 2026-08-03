@@ -58,14 +58,12 @@ init_system() {
 
 # 检测包管理器
 detect_package_manager() {
-    if command -v apt &> /dev/null; then
+    if command -v apt-get &> /dev/null; then
         echo "apt"
-    elif command -v apt-get &> /dev/null; then
-        echo "apt"
-    elif command -v yum &> /dev/null; then
-        echo "yum"
     elif command -v dnf &> /dev/null; then
         echo "dnf"
+    elif command -v yum &> /dev/null; then
+        echo "yum"
     elif command -v pacman &> /dev/null; then
         echo "pacman"
     elif command -v zypper &> /dev/null; then
@@ -89,35 +87,35 @@ install_fail2ban() {
 
     case "$pkg_manager" in
         apt)
-            sudo apt update || {
+            apt-get update || {
                 log_error "apt update 失败"
                 return 1
             }
-            sudo apt install -y fail2ban || {
+            apt-get install -y fail2ban || {
                 log_error "fail2ban 安装失败"
                 return 1
             }
             ;;
         yum)
-            sudo yum install -y fail2ban || {
+            yum install -y fail2ban || {
                 log_error "fail2ban 安装失败"
                 return 1
             }
             ;;
         dnf)
-            sudo dnf install -y fail2ban || {
+            dnf install -y fail2ban || {
                 log_error "fail2ban 安装失败"
                 return 1
             }
             ;;
         pacman)
-            sudo pacman -Sy --noconfirm fail2ban || {
+            pacman -Sy --noconfirm fail2ban || {
                 log_error "fail2ban 安装失败"
                 return 1
             }
             ;;
         zypper)
-            sudo zypper install -y fail2ban || {
+            zypper install -y fail2ban || {
                 log_error "fail2ban 安装失败"
                 return 1
             }
@@ -141,8 +139,59 @@ is_fail2ban_running() {
 
 # ==================== fail2ban 配置管理 ====================
 
+detect_ssh_ports() {
+    local sshd_command=""
+    local ports=""
+
+    if command -v sshd &> /dev/null; then
+        sshd_command=$(command -v sshd)
+    elif [ -x /usr/sbin/sshd ]; then
+        sshd_command="/usr/sbin/sshd"
+    fi
+
+    if [ -n "$sshd_command" ]; then
+        ports=$($sshd_command -T 2>/dev/null | awk '
+            $1 == "port" {
+                ports = ports ? ports "," $2 : $2
+            }
+            END { print ports }
+        ')
+    fi
+
+    echo "${ports:-22}"
+}
+
+detect_log_backend() {
+    if command -v journalctl &> /dev/null \
+        && journalctl -u ssh -n 1 --no-pager &> /dev/null; then
+        echo "systemd"
+    elif [ -e /var/log/auth.log ]; then
+        echo "/var/log/auth.log"
+    elif [ -e /var/log/secure ]; then
+        echo "/var/log/secure"
+    else
+        echo "systemd"
+    fi
+}
+
+detect_banaction() {
+    if command -v ufw &> /dev/null \
+        && ufw status 2>/dev/null | grep -qi '^Status: active'; then
+        echo "ufw"
+    else
+        echo ""
+    fi
+}
+
 # 生成默认 jail.local 配置
 generate_jail_config() {
+    local ssh_ports
+    local log_backend
+    local banaction
+    local backend_config
+    local banaction_config=""
+    local temp_config
+
     log_info "生成 jail.local 配置..."
 
     # 检查系统是否有 jail.conf
@@ -152,8 +201,35 @@ generate_jail_config() {
         return 1
     fi
 
+    ssh_ports=$(detect_ssh_ports)
+    log_backend=$(detect_log_backend)
+    banaction=$(detect_banaction)
+
+    if [ "$log_backend" = "systemd" ]; then
+        backend_config="backend = systemd"
+    else
+        backend_config="logpath = $log_backend"
+    fi
+
+    if [ -n "$banaction" ]; then
+        banaction_config="banaction = $banaction"
+    fi
+
+    temp_config=$(mktemp /tmp/fail2ban-jail.XXXXXX) || {
+        log_error "无法创建临时配置文件"
+        return 1
+    }
+
+    log_info "检测到 SSH 端口: $ssh_ports"
+    log_info "检测到日志后端: $log_backend"
+    if [ -n "$banaction" ]; then
+        log_info "检测到封禁动作: $banaction"
+    else
+        log_info "使用 fail2ban 默认封禁动作"
+    fi
+
     # 创建自定义配置（不复制 jail.conf，避免重复 [DEFAULT] 部分）
-    cat > /tmp/jail-custom.local << 'EOF'
+    cat > "$temp_config" << EOF
 # ==================== Fail2ban 自定义配置 ====================
 # 此文件将覆盖系统默认配置
 # 修改此文件后需要重启 fail2ban 服务
@@ -165,43 +241,36 @@ bantime = -1
 findtime = 1d
 # 最大尝试次数
 maxretry = 5
-# 禁封操作方式
-banaction = ufw
-# 操作组合（发送邮件+日志）
-action = %(action_mwl)s
+$banaction_config
 
 # ==================== SSHd 规则 ====================
 [sshd]
 # 本地 IP 不禁封
-ignoreip = 127.0.0.1/8
+ignoreip = 127.0.0.1/8 ::1
 # 启用此规则
 enabled = true
 # 使用的过滤器
 filter = sshd
 # SSHd 监听端口（如果修改了 SSH 端口，请在此修改）
-port = ssh
+port = $ssh_ports
 # 最大失败次数
 maxretry = 3
 # 查找时间窗口
 findtime = 1d
 # 禁封时间（-1 表示永久禁封）
 bantime = -1
-# 禁封操作
-banaction = ufw
-# 操作组合
-action = %(action_mwl)s
-# 日志文件路径
-logpath = /var/log/auth.log
+# 日志来源
+$backend_config
 
 EOF
 
     # 将自定义配置作为 jail.local
-    sudo cp /tmp/jail-custom.local "$CONFIG_FILE" || {
+    install -m 0644 "$temp_config" "$CONFIG_FILE" || {
         log_error "生成配置文件失败"
-        rm -f /tmp/jail-custom.local
+        rm -f "$temp_config"
         return 1
     }
-    rm -f /tmp/jail-custom.local
+    rm -f "$temp_config"
 
     log_info "jail.local 配置生成成功"
     return 0
@@ -228,14 +297,19 @@ cmd_install() {
 
     # 启用并启动服务
     log_info "启用 fail2ban 服务..."
-    sudo systemctl enable "$SERVICE_NAME" || {
+    if ! fail2ban-client -t; then
+        log_error "fail2ban 配置校验失败"
+        return 1
+    fi
+
+    systemctl enable "$SERVICE_NAME" || {
         log_error "启用 fail2ban 服务失败"
         return 1
     }
 
-    log_info "启动 fail2ban 服务..."
-    sudo systemctl start "$SERVICE_NAME" || {
-        log_error "启动 fail2ban 服务失败"
+    log_info "加载配置并启动 fail2ban 服务..."
+    systemctl restart "$SERVICE_NAME" || {
+        log_error "启动或重载 fail2ban 服务失败"
         return 1
     }
 
@@ -257,36 +331,36 @@ cmd_uninstall() {
     fi
 
     log_info "停止 fail2ban 服务..."
-    sudo systemctl stop "$SERVICE_NAME" || true
+    systemctl stop "$SERVICE_NAME" || true
 
     log_info "禁用 fail2ban 服务..."
-    sudo systemctl disable "$SERVICE_NAME" || true
+    systemctl disable "$SERVICE_NAME" || true
 
     local pkg_manager=$(detect_package_manager)
     case "$pkg_manager" in
         apt)
-            sudo apt remove --purge -y fail2ban || {
+            apt-get remove --purge -y fail2ban || {
                 log_error "卸载失败"
                 return 1
             }
-            sudo apt autoremove -y || {
+            apt-get autoremove -y || {
                 log_warn "自动清理失败，但fail2ban已卸载"
             }
             ;;
         yum|dnf)
-            sudo "$pkg_manager" remove -y fail2ban || {
+            "$pkg_manager" remove -y fail2ban || {
                 log_error "卸载失败"
                 return 1
             }
             ;;
         pacman)
-            sudo pacman -R --noconfirm fail2ban || {
+            pacman -R --noconfirm fail2ban || {
                 log_error "卸载失败"
                 return 1
             }
             ;;
         zypper)
-            sudo zypper remove -y fail2ban || {
+            zypper remove -y fail2ban || {
                 log_error "卸载失败"
                 return 1
             }
@@ -303,7 +377,7 @@ cmd_start() {
     fi
 
     log_info "启动 fail2ban 服务..."
-    if sudo systemctl start "$SERVICE_NAME"; then
+    if systemctl start "$SERVICE_NAME"; then
         log_info "fail2ban 服务已启动"
         return 0
     else
@@ -319,7 +393,7 @@ cmd_stop() {
     fi
 
     log_info "停止 fail2ban 服务..."
-    if sudo systemctl stop "$SERVICE_NAME"; then
+    if systemctl stop "$SERVICE_NAME"; then
         log_info "fail2ban 服务已停止"
         return 0
     else
@@ -335,7 +409,7 @@ cmd_restart() {
     fi
 
     log_info "重启 fail2ban 服务..."
-    if sudo systemctl restart "$SERVICE_NAME"; then
+    if systemctl restart "$SERVICE_NAME"; then
         log_info "fail2ban 服务已重启"
         return 0
     else
@@ -352,7 +426,7 @@ cmd_status() {
 
     echo ""
     echo -e "${BLUE}=== fail2ban 服务状态 ===${RESET}"
-    sudo systemctl status "$SERVICE_NAME" --no-pager || true
+    systemctl status "$SERVICE_NAME" --no-pager || true
     echo ""
 }
 
@@ -371,7 +445,7 @@ cmd_jail_status() {
 
     echo ""
     echo -e "${BLUE}=== 所有 Jail 状态 ===${RESET}"
-    sudo fail2ban-client status || {
+    fail2ban-client status || {
         log_error "获取状态失败"
         return 1
     }
@@ -393,7 +467,7 @@ cmd_view_banned_ips() {
     echo -e "${BLUE}请选择要查看的 Jail:${RESET}"
 
     # 获取所有 jail
-    local jails=$(sudo fail2ban-client status | grep "Jail list:" | sed 's/.*Jail list:\s*//g' | tr ',' '\n' | sed 's/^\s*//g' | sed 's/\s*$//g')
+    local jails=$(fail2ban-client status | grep "Jail list:" | sed 's/.*Jail list:\s*//g' | tr ',' '\n' | sed 's/^\s*//g' | sed 's/\s*$//g')
 
     if [ -z "$jails" ]; then
         log_warn "没有配置的 Jail"
@@ -419,7 +493,7 @@ cmd_view_banned_ips() {
         local selected_jail="${jail_array[$((choice-1))]}"
         echo ""
         echo -e "${BLUE}=== $selected_jail 被禁封的 IP ===${RESET}"
-        sudo fail2ban-client status "$selected_jail" || true
+        fail2ban-client status "$selected_jail" || true
         echo ""
     else
         log_error "无效选择"
@@ -447,7 +521,7 @@ cmd_ban_ip() {
     echo ""
     echo -e "${BLUE}请选择 Jail:${RESET}"
 
-    local jails=$(sudo fail2ban-client status | grep "Jail list:" | sed 's/.*Jail list:\s*//g' | tr ',' '\n' | sed 's/^\s*//g' | sed 's/\s*$//g')
+    local jails=$(fail2ban-client status | grep "Jail list:" | sed 's/.*Jail list:\s*//g' | tr ',' '\n' | sed 's/^\s*//g' | sed 's/\s*$//g')
 
     local i=1
     local -a jail_array
@@ -463,7 +537,7 @@ cmd_ban_ip() {
     if [ "$choice" -ge 1 ] 2>/dev/null && [ "$choice" -le "${#jail_array[@]}" ]; then
         local selected_jail="${jail_array[$((choice-1))]}"
         log_info "禁封 IP $ban_ip 到 Jail $selected_jail"
-        sudo fail2ban-client set "$selected_jail" banip "$ban_ip" || {
+        fail2ban-client set "$selected_jail" banip "$ban_ip" || {
             log_error "禁封 IP 失败"
             return 1
         }
@@ -495,7 +569,7 @@ cmd_unban_ip() {
     echo ""
     echo -e "${BLUE}请选择 Jail:${RESET}"
 
-    local jails=$(sudo fail2ban-client status | grep "Jail list:" | sed 's/.*Jail list:\s*//g' | tr ',' '\n' | sed 's/^\s*//g' | sed 's/\s*$//g')
+    local jails=$(fail2ban-client status | grep "Jail list:" | sed 's/.*Jail list:\s*//g' | tr ',' '\n' | sed 's/^\s*//g' | sed 's/\s*$//g')
 
     local i=1
     local -a jail_array
@@ -511,7 +585,7 @@ cmd_unban_ip() {
     if [ "$choice" -ge 1 ] 2>/dev/null && [ "$choice" -le "${#jail_array[@]}" ]; then
         local selected_jail="${jail_array[$((choice-1))]}"
         log_info "解禁 IP $unban_ip 在 Jail $selected_jail"
-        sudo fail2ban-client set "$selected_jail" unbanip "$unban_ip" || {
+        fail2ban-client set "$selected_jail" unbanip "$unban_ip" || {
             log_error "解禁 IP 失败"
             return 1
         }
@@ -535,7 +609,7 @@ cmd_view_config() {
     echo -e "${BLUE}=== fail2ban 配置文件 ===${RESET}"
     echo -e "${CYAN}文件路径: $CONFIG_FILE${RESET}"
     echo ""
-    sudo cat "$CONFIG_FILE" | head -50
+    head -50 "$CONFIG_FILE"
     echo "..."
     echo -e "${YELLOW}(显示前 50 行，完整内容请直接编辑文件)${RESET}"
     echo ""
@@ -552,11 +626,11 @@ cmd_edit_config() {
 
     # 尝试使用 vim、vi 或 nano
     if command -v vim &> /dev/null; then
-        sudo vim "$CONFIG_FILE"
+        vim "$CONFIG_FILE"
     elif command -v vi &> /dev/null; then
-        sudo vi "$CONFIG_FILE"
+        vi "$CONFIG_FILE"
     elif command -v nano &> /dev/null; then
-        sudo nano "$CONFIG_FILE"
+        nano "$CONFIG_FILE"
     else
         log_error "未找到编辑器（vim/vi/nano）"
         return 1
@@ -579,7 +653,7 @@ cmd_backup_config() {
     local backup_file="${CONFIG_BACKUP_DIR}/jail.local.backup.$(date +%Y%m%d-%H%M%S)"
 
     log_info "备份配置到: $backup_file"
-    sudo cp "$CONFIG_FILE" "$backup_file" || {
+    cp "$CONFIG_FILE" "$backup_file" || {
         log_error "备份失败"
         return 1
     }
@@ -587,10 +661,10 @@ cmd_backup_config() {
     log_info "配置备份成功"
 
     # 清理旧备份（保留最多 5 个）
-    local backup_count=$(sudo find "$CONFIG_BACKUP_DIR" -name "jail.local.backup.*" | wc -l)
+    local backup_count=$(find "$CONFIG_BACKUP_DIR" -name "jail.local.backup.*" | wc -l)
     if [ "$backup_count" -gt 5 ]; then
         log_info "清理旧备份（保留最多 5 个）..."
-        sudo find "$CONFIG_BACKUP_DIR" -name "jail.local.backup.*" -type f | sort -r | tail -n +6 | xargs sudo rm -f
+        find "$CONFIG_BACKUP_DIR" -name "jail.local.backup.*" -type f | sort -r | tail -n +6 | xargs rm -f
     fi
 }
 
@@ -600,7 +674,7 @@ cmd_restore_config() {
         return 1
     fi
 
-    local backups=$(sudo find "$CONFIG_BACKUP_DIR" -name "jail.local.backup.*" -type f 2>/dev/null | sort -r)
+    local backups=$(find "$CONFIG_BACKUP_DIR" -name "jail.local.backup.*" -type f 2>/dev/null | sort -r)
 
     if [ -z "$backups" ]; then
         log_warn "没有备份文件"
@@ -628,7 +702,7 @@ cmd_restore_config() {
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             log_info "恢复备份: $(basename "$selected_backup")"
-            sudo cp "$selected_backup" "$CONFIG_FILE" || {
+            cp "$selected_backup" "$CONFIG_FILE" || {
                 log_error "恢复失败"
                 return 1
             }
@@ -656,7 +730,7 @@ cmd_view_logs() {
 
     log_info "显示最近 100 条日志（按 q 退出）"
     echo ""
-    sudo journalctl -u fail2ban -n 100 --no-pager || {
+    journalctl -u fail2ban -n 100 --no-pager || {
         log_error "无法读取日志"
         return 1
     }
@@ -671,7 +745,7 @@ cmd_view_realtime_logs() {
 
     log_info "显示实时日志（按 Ctrl+C 退出）"
     echo ""
-    sudo journalctl -u fail2ban -f || true
+    journalctl -u fail2ban -f || true
 }
 
 # ==================== 帮助信息 ====================

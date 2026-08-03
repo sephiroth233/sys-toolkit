@@ -4,7 +4,7 @@ set -euo pipefail
 #===============================================================================
 # Docker & Docker Compose 一键安装脚本
 # 支持：正常环境安装 / 国内镜像加速安装
-# 适用：Ubuntu / Debian / CentOS / RHEL / Rocky / AlmaLinux
+# 适用：Ubuntu / Debian / CentOS / RHEL / Rocky / AlmaLinux / Fedora
 #===============================================================================
 
 RED='\033[0;31m'
@@ -39,9 +39,19 @@ detect_os() {
     fi
 
     case "$OS" in
-        ubuntu|debian) PKG_MGR="apt";;
-        centos|rhel|rocky|almalinux) PKG_MGR="yum";;
-        fedora) PKG_MGR="dnf";;
+        ubuntu|debian)
+            PKG_MGR="apt"
+            ;;
+        centos|rhel|rocky|almalinux|fedora)
+            if command -v dnf &>/dev/null; then
+                PKG_MGR="dnf"
+            elif command -v yum &>/dev/null; then
+                PKG_MGR="yum"
+            else
+                log_error "未找到 dnf 或 yum"
+                exit 1
+            fi
+            ;;
         *)
             log_error "不支持的系统: $OS"
             exit 1
@@ -49,6 +59,13 @@ detect_os() {
     esac
 
     log_info "检测到系统: $OS ($VERSION_CODENAME), 包管理器: $PKG_MGR"
+}
+
+docker_repo_os() {
+    case "$OS" in
+        rocky|almalinux) echo "centos" ;;
+        *)               echo "$OS" ;;
+    esac
 }
 
 #-------------------------------------------------------------------------------
@@ -61,7 +78,7 @@ remove_old() {
             apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
             ;;
         yum|dnf)
-            yum remove -y docker docker-client docker-client-latest docker-common \
+            "$PKG_MGR" remove -y docker docker-client docker-client-latest docker-common \
                 docker-latest docker-latest-logrotate docker-logrotate docker-engine 2>/dev/null || true
             ;;
     esac
@@ -94,11 +111,16 @@ $VERSION_CODENAME stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
 # 正常环境安装 (YUM)
 #-------------------------------------------------------------------------------
 install_normal_yum() {
+    local repo_os
+    repo_os=$(docker_repo_os)
+
     log_step "使用 Docker 官方源安装..."
 
-    yum install -y yum-utils
-    yum-config-manager --add-repo "https://download.docker.com/linux/$OS/docker-ce.repo"
-    yum install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    "$PKG_MGR" install -y ca-certificates curl
+    install -m 0755 -d /etc/yum.repos.d
+    curl -fsSL "https://download.docker.com/linux/${repo_os}/docker-ce.repo" \
+        -o /etc/yum.repos.d/docker-ce.repo
+    "$PKG_MGR" install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 }
 
 #-------------------------------------------------------------------------------
@@ -151,11 +173,16 @@ $VERSION_CODENAME stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
 # 国内环境安装 (YUM) — 使用阿里云镜像
 #-------------------------------------------------------------------------------
 install_china_yum() {
+    local repo_os
+    repo_os=$(docker_repo_os)
+
     log_step "使用阿里云镜像源安装..."
 
-    yum install -y yum-utils
-    yum-config-manager --add-repo "https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo"
-    yum install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    "$PKG_MGR" install -y ca-certificates curl
+    install -m 0755 -d /etc/yum.repos.d
+    curl -fsSL "https://mirrors.aliyun.com/docker-ce/linux/${repo_os}/docker-ce.repo" \
+        -o /etc/yum.repos.d/docker-ce.repo
+    "$PKG_MGR" install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 }
 
 #-------------------------------------------------------------------------------
@@ -268,7 +295,7 @@ uninstall_docker() {
             apt-get autoremove -y --purge 2>/dev/null || true
             ;;
         yum|dnf)
-            yum remove -y docker-ce docker-ce-cli containerd.io \
+            "$PKG_MGR" remove -y docker-ce docker-ce-cli containerd.io \
                 docker-buildx-plugin docker-compose-plugin 2>/dev/null || true
             ;;
     esac

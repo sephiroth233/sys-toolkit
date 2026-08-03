@@ -255,15 +255,25 @@ install_rclone() {
 
     # 备用安装方法：直接下载二进制文件
     log_warn "官方脚本安装失败，尝试手动下载安装..."
-    local rclone_url="https://downloads.rclone.org/v1.68.2/rclone-v1.68.2-linux-${arch}.zip"
-    local temp_zip="/tmp/rclone.zip"
+    local rclone_url="https://downloads.rclone.org/rclone-current-linux-${arch}.zip"
+    local download_dir
+    local temp_zip
+    local extracted_binary
     local install_dir="/usr/local/bin"
 
+    download_dir=$(mktemp -d /tmp/rclone-install.XXXXXX) || {
+        log_error "无法创建临时目录"
+        return 1
+    }
+    temp_zip="${download_dir}/rclone.zip"
+
     if curl -fsSL -o "$temp_zip" "$rclone_url" 2>/dev/null; then
-        unzip -o "$temp_zip" -d /tmp/ 2>/dev/null || busybox unzip -o "$temp_zip" -d /tmp/ 2>/dev/null
-        if [ -f "/tmp/rclone-v1.68.2-linux-${arch}/rclone" ]; then
-            cp "/tmp/rclone-v1.68.2-linux-${arch}/rclone" "$install_dir/" && chmod 755 "$install_dir/rclone"
-            rm -rf "/tmp/rclone-v1.68.2-linux-${arch}" "$temp_zip"
+        unzip -o "$temp_zip" -d "$download_dir" 2>/dev/null \
+            || busybox unzip -o "$temp_zip" -d "$download_dir" 2>/dev/null
+        extracted_binary=$(find "$download_dir" -type f -name rclone | head -n 1)
+        if [ -n "$extracted_binary" ] && [ -f "$extracted_binary" ]; then
+            install -m 0755 "$extracted_binary" "$install_dir/rclone"
+            rm -rf "$download_dir"
             if is_rclone_installed; then
                 local version
                 version=$(rclone version | head -n 1)
@@ -272,6 +282,8 @@ install_rclone() {
             fi
         fi
     fi
+
+    rm -rf "$download_dir"
 
     log_error "rclone 安装失败，请手动安装"
     return 1

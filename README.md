@@ -36,7 +36,7 @@ chmod +x server-proxy.sh
 sudo ./server-proxy.sh
 ```
 
-要求：Linux（systemd），root 权限。
+要求：Linux（systemd），root 权限；Sing-box 使用官方通用安装器（deb/rpm、Arch Linux 等）。
 
 ## 系统备份恢复 (rclone)
 
@@ -52,7 +52,7 @@ sudo ./sys-backup-restore.sh
 
 ## fail2ban 管理
 
-fail2ban 入侵检测和防护的安装、配置、Jail 与 IP 管理。
+fail2ban 入侵检测和防护的安装、配置、Jail 与 IP 管理。安装时自动检测 SSH 监听端口、journald/传统日志文件以及活动的 UFW，兼容 Debian 13 等默认不安装 `sudo`、不生成 `/var/log/auth.log` 的精简系统。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sephiroth233/sys-toolkit/master/fail2ban-manager.sh -o fail2ban-manager.sh
@@ -60,7 +60,7 @@ chmod +x fail2ban-manager.sh
 sudo ./fail2ban-manager.sh
 ```
 
-要求：Linux（systemd），root 权限。
+要求：Linux（systemd），root 权限；支持 apt/dnf/yum/pacman/zypper（发行版软件源需提供 fail2ban）。
 
 ## Docker 安装
 
@@ -72,7 +72,7 @@ chmod +x docker-install.sh
 sudo ./docker-install.sh
 ```
 
-要求：Linux（Ubuntu/Debian/CentOS/RHEL/Rocky/Alma），root 权限。
+要求：Linux（Ubuntu/Debian/CentOS/RHEL/Rocky/Alma/Fedora），root 权限。
 
 ## Mihomo 安装 (macOS)
 
@@ -84,7 +84,7 @@ chmod +x mihomo-install.sh
 sudo ./mihomo-install.sh install
 ```
 
-要求：macOS，sudo 权限。
+要求：macOS（Apple Silicon 或 Intel），sudo 权限。
 
 ## WSL + Docker 配置
 
@@ -96,7 +96,7 @@ chmod +x wsl-docker-setup.sh
 sudo ./wsl-docker-setup.sh
 ```
 
-要求：WSL (Ubuntu)。
+要求：WSL Ubuntu、已启用 systemd；请从普通用户账户使用 `sudo` 运行。
 
 ## 图床工具 (img)
 

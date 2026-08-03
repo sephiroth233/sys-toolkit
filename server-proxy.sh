@@ -65,15 +65,15 @@ check_ss_command() {
 
         # 检测包管理器并安装
         if command -v apt-get &> /dev/null; then
-            sudo apt-get update && sudo apt-get install -y iproute2
-        elif command -v yum &> /dev/null; then
-            sudo yum install -y iproute
+            apt-get update && apt-get install -y iproute2
         elif command -v dnf &> /dev/null; then
-            sudo dnf install -y iproute
+            dnf install -y iproute
+        elif command -v yum &> /dev/null; then
+            yum install -y iproute
         elif command -v pacman &> /dev/null; then
-            sudo pacman -Sy --noconfirm iproute2
+            pacman -Sy --noconfirm iproute2
         elif command -v zypper &> /dev/null; then
-            sudo zypper install -y iproute2
+            zypper install -y iproute2
         else
             echo -e "${RED}无法检测到支持的包管理器，请手动安装 iproute2 包${RESET}"
             exit 1
@@ -98,15 +98,15 @@ check_jq_command() {
 
         # 检测包管理器并安装
         if command -v apt-get &> /dev/null; then
-            sudo apt-get update && sudo apt-get install -y jq
-        elif command -v yum &> /dev/null; then
-            sudo yum install -y jq
+            apt-get update && apt-get install -y jq
         elif command -v dnf &> /dev/null; then
-            sudo dnf install -y jq
+            dnf install -y jq
+        elif command -v yum &> /dev/null; then
+            yum install -y jq
         elif command -v pacman &> /dev/null; then
-            sudo pacman -Sy --noconfirm jq
+            pacman -Sy --noconfirm jq
         elif command -v zypper &> /dev/null; then
-            sudo zypper install -y jq
+            zypper install -y jq
         else
             echo -e "${RED}无法检测到支持的包管理器，请手动安装 jq 包${RESET}"
             exit 1
@@ -149,8 +149,8 @@ generate_unused_port() {
 install_sing_box() {
     echo -e "${CYAN}正在安装 sing-box${RESET}"
 
-    # 下载并运行 sing-box 安装脚本
-    bash <(curl -fsSL https://sing-box.app/deb-install.sh) || {
+    # 官方通用安装器支持 deb/rpm、Arch Linux 和 OpenWrt
+    bash <(curl -fsSL https://sing-box.app/install.sh) || {
         echo -e "${RED}sing-box 安装失败！请检查网络连接或安装脚本来源。${RESET}"
         exit 1
     }
@@ -270,37 +270,47 @@ install_snell() {
         return 0
     fi
 
-    # 检查必要的包管理器函数
-    if ! command -v apt-get &> /dev/null && ! command -v yum &> /dev/null; then
-        echo -e "${RED}不支持的系统包管理器${RESET}"
-        return 1
-    fi
-
     # 安装必要软件包
     echo -e "${GREEN}安装必要软件包${RESET}"
     if command -v apt-get &> /dev/null; then
-        apt update
-        apt install -y wget unzip curl
+        apt-get update
+        apt-get install -y wget unzip curl
+    elif command -v dnf &> /dev/null; then
+        dnf install -y wget unzip curl
     elif command -v yum &> /dev/null; then
-        yum -y update
-        yum -y install wget unzip curl
+        yum install -y wget unzip curl
+    elif command -v pacman &> /dev/null; then
+        pacman -Sy --noconfirm wget unzip curl
+    elif command -v zypper &> /dev/null; then
+        zypper install -y wget unzip curl
+    else
+        echo -e "${RED}不支持的系统包管理器${RESET}"
+        return 1
     fi
 
     # Snell 版本
     local SNELL_VERSION="v5.0.1"
 
     # 检测系统架构
-    local ARCH=$(arch)
+    local ARCH
+    ARCH=$(uname -m)
     local SNELL_URL
-    if [[ ${ARCH} == "aarch64" ]]; then
-        SNELL_URL="https://dl.nssurge.com/snell/snell-server-${SNELL_VERSION}-linux-aarch64.zip"
-    else
-        SNELL_URL="https://dl.nssurge.com/snell/snell-server-${SNELL_VERSION}-linux-amd64.zip"
-    fi
+    case "$ARCH" in
+        aarch64|arm64)
+            SNELL_URL="https://dl.nssurge.com/snell/snell-server-${SNELL_VERSION}-linux-aarch64.zip"
+            ;;
+        x86_64|amd64)
+            SNELL_URL="https://dl.nssurge.com/snell/snell-server-${SNELL_VERSION}-linux-amd64.zip"
+            ;;
+        *)
+            echo -e "${RED}Snell 不支持当前系统架构: ${ARCH}${RESET}"
+            return 1
+            ;;
+    esac
 
     # 下载 Snell
     echo -e "${GREEN}下载 Snell...${RESET}"
-    wget ${SNELL_URL} -O snell-server.zip || {
+    wget "$SNELL_URL" -O snell-server.zip || {
         echo -e "${RED}下载 Snell 失败${RESET}"
         return 1
     }
@@ -615,7 +625,7 @@ status_sing_box() {
 
 # 查看 sing-box 日志
 log_sing_box() {
-    sudo journalctl -u sing-box --output cat -f
+    journalctl -u sing-box --output cat -f
 }
 
 # 启动 Snell
@@ -655,7 +665,7 @@ status_snell() {
 
 # 查看 Snell 日志
 log_snell() {
-    sudo journalctl -u snell --output cat -f
+    journalctl -u snell --output cat -f
 }
 
 # 获取或生成端口（允许用户输入或使用随机端口）

@@ -37,9 +37,21 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1" >&2
 }
 
+check_platform() {
+    if [ "$(uname -s)" != "Darwin" ]; then
+        log_error "此脚本仅支持 macOS，当前系统: $(uname -s)"
+        exit 1
+    fi
+}
+
 # 检查权限
 check_permission() {
-    if [ ! -w "/usr/local/bin" ]; then
+    local permission_target="/usr/local/bin"
+    if [ ! -d "$permission_target" ]; then
+        permission_target="/usr/local"
+    fi
+
+    if [ ! -w "$permission_target" ]; then
         log_error "没有 /usr/local/bin 的写权限，请使用 sudo"
         exit 1
     fi
@@ -86,8 +98,21 @@ get_version_from_release() {
 
 # 获取系统架构
 get_arch() {
-    arch=$(arch | sed 's/aarch64/arm64/' | sed 's/i386/amd64/')
-    echo "$arch"
+    local machine_arch
+    machine_arch=$(uname -m)
+
+    case "$machine_arch" in
+        arm64|aarch64)
+            echo "arm64"
+            ;;
+        x86_64|i386)
+            echo "amd64"
+            ;;
+        *)
+            log_error "不支持的系统架构: $machine_arch"
+            return 1
+            ;;
+    esac
 }
 
 # 下载 Mihomo
@@ -216,6 +241,8 @@ purge_all() {
 # 主函数
 main() {
     local action=${1:-install}
+
+    check_platform
 
     case "$action" in
         install)
