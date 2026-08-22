@@ -15,11 +15,6 @@ CONFIG_FILE="${CONFIG_DIR}/config.json"
 SERVICE_NAME="sing-box"
 DIRECT_CONFIG_FILE="${CONFIG_DIR}/direct_configs.conf"
 
-# Snell 相关常量
-SNELL_CONFIG_DIR="/etc/snell"
-SNELL_CONFIG_FILE="${SNELL_CONFIG_DIR}/snell-server.conf"
-SNELL_SERVICE_NAME="snell"
-
 # 检查 root 权限
 check_root() {
     if [ "$(id -u)" != "0" ]; then
@@ -43,19 +38,28 @@ is_sing_box_running() {
     return $?
 }
 
-# 检查 Snell 是否已安装
-is_snell_installed() {
-    if command -v snell-server &> /dev/null; then
-        return 0
-    else
+# 获取 sing-box 版本号
+get_sing_box_version() {
+    if ! is_sing_box_installed; then
         return 1
     fi
+    sing-box version 2>/dev/null | head -1 | awk '{print $3}'
 }
 
-# 检查 Snell 运行状态
-is_snell_running() {
-    systemctl is-active --quiet "${SNELL_SERVICE_NAME}"
-    return $?
+# 检查 sing-box 是否支持 Snell 协议 (需 1.14.0+)
+check_snell_supported() {
+    local version
+    version=$(get_sing_box_version)
+    if [ -z "$version" ]; then
+        return 1
+    fi
+    local major minor
+    major=$(echo "$version" | cut -d. -f1)
+    minor=$(echo "$version" | cut -d. -f2)
+    if [ "$major" -gt 1 ] || { [ "$major" -eq 1 ] && [ "$minor" -ge 14 ]; }; then
+        return 0
+    fi
+    return 1
 }
 
 # 检查 ss 命令是否可用
@@ -145,15 +149,61 @@ generate_unused_port() {
     done
 }
 
+# 选择 sing-box 安装版本
+choose_sing_box_version() {
+    echo -e "${CYAN}请选择要安装的 sing-box 版本:${RESET}"
+    echo "1. 最新正式版 (推荐，无 Snell 协议)"
+    echo "2. 最新 Beta 版 (包含 Snell 协议，需 1.14.0+)"
+    echo "3. 指定版本号"
+    read -p "请输入选项编号 (1-3，直接回车默认 1): " version_choice
+    version_choice=${version_choice:-1}
+
+    install_args=()
+    case "${version_choice}" in
+        1)
+            ;;
+        2)
+            install_args+=("--beta")
+            ;;
+        3)
+            read -p "请输入版本号 (如 1.14.0-beta.17): " custom_version
+            if [ -z "$custom_version" ]; then
+                echo -e "${RED}版本号不能为空！${RESET}"
+                return 1
+            fi
+            install_args+=("--version" "$custom_version")
+            ;;
+        *)
+            echo -e "${RED}无效的选项${RESET}"
+            return 1
+            ;;
+    esac
+    return 0
+}
+
 # 安装 sing-box
 install_sing_box() {
     echo -e "${CYAN}正在安装 sing-box${RESET}"
 
+    # 选择版本
+    if ! choose_sing_box_version; then
+        echo -e "${YELLOW}已取消安装${RESET}"
+        return 1
+    fi
+
     # 官方通用安装器支持 deb/rpm、Arch Linux 和 OpenWrt
-    bash <(curl -fsSL https://sing-box.app/install.sh) || {
-        echo -e "${RED}sing-box 安装失败！请检查网络连接或安装脚本来源。${RESET}"
-        exit 1
-    }
+    if [ ${#install_args[@]} -eq 0 ]; then
+        bash <(curl -fsSL https://sing-box.app/install.sh) || {
+            echo -e "${RED}sing-box 安装失败！请检查网络连接或安装脚本来源。${RESET}"
+            exit 1
+        }
+    else
+        echo -e "${CYAN}安装参数: ${install_args[*]}${RESET}"
+        bash <(curl -fsSL https://sing-box.app/install.sh) "${install_args[@]}" || {
+            echo -e "${RED}sing-box 安装失败！请检查网络连接或安装脚本来源。${RESET}"
+            exit 1
+        }
+    fi
 
     # 生成随机端口和密码
     check_ss_command
@@ -161,6 +211,8 @@ install_sing_box() {
     hysteria_port=$(generate_unused_port)
     anytls_port=$(generate_unused_port)
     shadowsocks_port=$(generate_unused_port)
+    snell_port=$(generate_unused_port)
+    snell_psk=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
     ss_password=$(sing-box generate rand --base64 32)
     password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
     socks_port=$(generate_unused_port)
@@ -260,229 +312,6 @@ EOF
     echo -e "${YELLOW}提示：已使用最小配置安装，请使用菜单选项生成节点配置。${RESET}"
 }
 
-# 安装 Snell
-install_snell() {
-    echo -e "${CYAN}正在安装 Snell${RESET}"
-
-    # 检查是否已安装
-    if is_snell_installed; then
-        echo -e "${YELLOW}Snell 已经安装！${RESET}"
-        return 0
-    fi
-
-    # 安装必要软件包
-    echo -e "${GREEN}安装必要软件包${RESET}"
-    if command -v apt-get &> /dev/null; then
-        apt-get update
-        apt-get install -y wget unzip curl
-    elif command -v dnf &> /dev/null; then
-        dnf install -y wget unzip curl
-    elif command -v yum &> /dev/null; then
-        yum install -y wget unzip curl
-    elif command -v pacman &> /dev/null; then
-        pacman -Sy --noconfirm wget unzip curl
-    elif command -v zypper &> /dev/null; then
-        zypper install -y wget unzip curl
-    else
-        echo -e "${RED}不支持的系统包管理器${RESET}"
-        return 1
-    fi
-
-    # Snell 版本
-    local SNELL_VERSION="v5.0.1"
-
-    # 检测系统架构
-    local ARCH
-    ARCH=$(uname -m)
-    local SNELL_URL
-    case "$ARCH" in
-        aarch64|arm64)
-            SNELL_URL="https://dl.nssurge.com/snell/snell-server-${SNELL_VERSION}-linux-aarch64.zip"
-            ;;
-        x86_64|amd64)
-            SNELL_URL="https://dl.nssurge.com/snell/snell-server-${SNELL_VERSION}-linux-amd64.zip"
-            ;;
-        *)
-            echo -e "${RED}Snell 不支持当前系统架构: ${ARCH}${RESET}"
-            return 1
-            ;;
-    esac
-
-    # 下载 Snell
-    echo -e "${GREEN}下载 Snell...${RESET}"
-    wget "$SNELL_URL" -O snell-server.zip || {
-        echo -e "${RED}下载 Snell 失败${RESET}"
-        return 1
-    }
-
-    # 解压安装
-    echo -e "${GREEN}安装 Snell...${RESET}"
-    unzip -o snell-server.zip -d /usr/local/bin || {
-        echo -e "${RED}解压缩 Snell 失败${RESET}"
-        return 1
-    }
-
-    rm snell-server.zip
-    chmod +x /usr/local/bin/snell-server
-
-    # 创建 Snell 用户
-    if ! id "snell" &>/dev/null; then
-        useradd -r -s /usr/sbin/nologin snell
-    fi
-
-    # 创建配置目录
-    mkdir -p "${SNELL_CONFIG_DIR}"
-
-    # 生成 systemd 服务文件
-    cat > /etc/systemd/system/snell.service << EOF
-[Unit]
-Description=Snell Proxy Service
-After=network.target
-
-[Service]
-Type=simple
-User=snell
-Group=snell
-ExecStart=/usr/local/bin/snell-server -c ${SNELL_CONFIG_FILE}
-AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
-LimitNOFILE=32768
-Restart=on-failure
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=snell-server
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    # 启用服务（但不启动，因为还没有配置）
-    systemctl daemon-reload
-    systemctl enable "${SNELL_SERVICE_NAME}"
-
-    echo -e "${GREEN}Snell 安装成功！${RESET}"
-    echo -e "${YELLOW}提示：Snell 已安装但未配置，请使用菜单选项生成配置。${RESET}"
-}
-
-# 生成 Snell 配置
-generate_snell_config() {
-    echo -e "${CYAN}=== 生成 Snell 配置 ===${RESET}"
-
-    # 检查 Snell 是否已安装
-    if ! is_snell_installed; then
-        echo -e "${RED}Snell 尚未安装，请先安装！${RESET}"
-        return 1
-    fi
-
-    # 检查是否已有配置
-    if [ -f "${SNELL_CONFIG_FILE}" ]; then
-        echo -e "${YELLOW}Snell 配置已存在，是否重新生成？${RESET}"
-        read -p "$(echo -e "${RED}重新生成将覆盖现有配置！(y/N) ${RESET}")" confirm
-        confirm=${confirm:-N}
-        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-            echo -e "${YELLOW}已取消操作${RESET}"
-            return 0
-        fi
-    fi
-
-    # 获取或生成端口
-    local port
-    while true; do
-        read -r -p "请输入 Snell 端口 (直接回车使用随机端口): " port
-        # 如果用户直接回车，使用随机端口
-        if [ -z "$port" ]; then
-            port=$(generate_unused_port)
-            echo -e "${CYAN}使用随机端口: ${port}${RESET}"
-            break
-        fi
-        # 验证端口格式
-        if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1025 ] || [ "$port" -gt 65535 ]; then
-            echo -e "${RED}端口必须是 1025-65535 之间的数字！${RESET}"
-            continue
-        fi
-        # 检查端口是否可用
-        if ! is_port_available "$port"; then
-            echo -e "${RED}端口 $port 已被占用，请选择其他端口！${RESET}"
-            continue
-        fi
-        break
-    done
-
-    # 生成随机密钥
-    local psk=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 20)
-
-    # 获取本机 IP 和国家
-    local host_ip=$(curl -s http://checkip.amazonaws.com)
-    local ip_country=$(curl -s http://ipinfo.io/${host_ip}/country)
-
-    # 生成 Snell 配置文件
-    cat > "${SNELL_CONFIG_FILE}" << EOF
-[snell-server]
-listen = 0.0.0.0:${port}
-psk = ${psk}
-ipv6 = false
-EOF
-
-    # 参数直接从 snell-server.conf 读取
-
-    # 生成客户端配置
-    cat > "${SNELL_CONFIG_DIR}/config.txt" << EOF
-${ip_country}-snell = snell, ${host_ip}, ${port}, psk = ${psk}, version = 5, reuse = true
-EOF
-
-    # 启动服务
-    echo -e "${YELLOW}正在启动 Snell 服务...${RESET}"
-    systemctl start "${SNELL_SERVICE_NAME}"
-
-    # 检查服务状态
-    if ! is_snell_running; then
-        echo -e "${RED}Snell 服务启动失败${RESET}"
-        systemctl status "${SNELL_SERVICE_NAME}"
-        return 1
-    fi
-
-    echo -e "${GREEN}Snell 配置生成成功！${RESET}"
-    echo -e "${CYAN}Snell 配置信息：${RESET}"
-    cat "${SNELL_CONFIG_DIR}/config.txt"
-
-    # 配置信息已保存在 snell-server.conf 中
-}
-
-# 删除 Snell 配置
-delete_snell_config() {
-    echo -e "${CYAN}=== 删除 Snell 配置 ===${RESET}"
-
-    # 检查 Snell 是否已安装
-    if ! is_snell_installed; then
-        echo -e "${RED}Snell 尚未安装！${RESET}"
-        return 1
-    fi
-
-    # 检查是否有配置
-    if [ ! -f "${SNELL_CONFIG_FILE}" ]; then
-        echo -e "${YELLOW}Snell 配置不存在！${RESET}"
-        return 0
-    fi
-
-    read -r -p "$(echo -e "${RED}确定要删除 Snell 配置吗？这将停止服务并删除配置文件。(y/N) ${RESET}")" confirm
-    confirm=${confirm:-N}
-
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        echo -e "${YELLOW}已取消操作${RESET}"
-        return 0
-    fi
-
-    # 停止服务
-    systemctl stop "${SNELL_SERVICE_NAME}" 2>/dev/null
-
-    # 删除配置文件
-    rm -f "${SNELL_CONFIG_FILE}"
-    rm -f "${SNELL_CONFIG_DIR}/config.txt"
-
-    echo -e "${GREEN}Snell 配置已删除！${RESET}"
-    echo -e "${YELLOW}提示：Snell 服务已停止，但程序文件仍保留。如需重新配置，请使用菜单选项生成配置。${RESET}"
-}
-
 uninstall_sing_box() {
     read -p "$(echo -e "${RED}确定要卸载 sing-box 吗? (Y/n) ${RESET}")" choice
     choice=${choice:-Y}  # 默认设置为 Y
@@ -534,60 +363,6 @@ uninstall_sing_box() {
     esac
 }
 
-# 卸载 Snell
-uninstall_snell() {
-    read -p "$(echo -e "${RED}确定要卸载 Snell 吗? (Y/n) ${RESET}")" choice
-    choice=${choice:-Y}  # 默认设置为 Y
-    case "${choice}" in
-        y|Y)
-            echo -e "${CYAN}正在卸载 Snell${RESET}"
-
-            # 停止 Snell 服务
-            systemctl stop "${SNELL_SERVICE_NAME}" || {
-                echo -e "${RED}停止 Snell 服务失败。${RESET}"
-            }
-
-            # 禁用 Snell 服务
-            systemctl disable "${SNELL_SERVICE_NAME}" || {
-                echo -e "${RED}禁用 Snell 服务失败。${RESET}"
-            }
-
-            # 删除服务文件
-            rm -f /etc/systemd/system/snell.service
-
-            # 重新加载 systemd
-            systemctl daemon-reload || {
-                echo -e "${YELLOW}无法重新加载 systemd 守护进程。${RESET}"
-            }
-
-            # 删除 Snell 可执行文件
-            if [ -f "/usr/local/bin/snell-server" ]; then
-                rm /usr/local/bin/snell-server || {
-                    echo -e "${YELLOW}无法删除 /usr/local/bin/snell-server。${RESET}"
-                }
-            fi
-
-            # 删除配置目录
-            if [ -d "${SNELL_CONFIG_DIR}" ]; then
-                echo -e "${YELLOW}正在删除配置目录: ${SNELL_CONFIG_DIR}${RESET}"
-                rm -rf "${SNELL_CONFIG_DIR}" || {
-                    echo -e "${YELLOW}无法删除配置目录 ${SNELL_CONFIG_DIR}${RESET}"
-                }
-            fi
-
-            # 删除 Snell 用户（如果存在且没有其他用途）
-            if id "snell" &>/dev/null; then
-                echo -e "${YELLOW}注意：保留 Snell 用户，如需删除请手动执行 'userdel snell'${RESET}"
-            fi
-
-            echo -e "${GREEN}Snell 卸载成功${RESET}"
-            ;;
-        *)
-            echo -e "${YELLOW}已取消卸载操作${RESET}"
-            ;;
-    esac
-}
-
 # 启动 sing-box
 start_sing_box() {
     systemctl start "${SERVICE_NAME}"
@@ -626,46 +401,6 @@ status_sing_box() {
 # 查看 sing-box 日志
 log_sing_box() {
     journalctl -u sing-box --output cat -f
-}
-
-# 启动 Snell
-start_snell() {
-    systemctl start "${SNELL_SERVICE_NAME}"
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}${SNELL_SERVICE_NAME} 服务成功启动${RESET}"
-    else
-        echo -e "${RED}${SNELL_SERVICE_NAME} 服务启动失败${RESET}"
-    fi
-}
-
-# 停止 Snell
-stop_snell() {
-    systemctl stop "${SNELL_SERVICE_NAME}"
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}${SNELL_SERVICE_NAME} 服务成功停止${RESET}"
-    else
-        echo -e "${RED}${SNELL_SERVICE_NAME} 服务停止失败${RESET}"
-    fi
-}
-
-# 重启 Snell
-restart_snell() {
-    systemctl restart "${SNELL_SERVICE_NAME}"
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}${SNELL_SERVICE_NAME} 服务成功重启${RESET}"
-    else
-        echo -e "${RED}${SNELL_SERVICE_NAME} 服务重启失败${RESET}"
-    fi
-}
-
-# 查看 Snell 状态
-status_snell() {
-    systemctl status "${SNELL_SERVICE_NAME}"
-}
-
-# 查看 Snell 日志
-log_snell() {
-    journalctl -u snell --output cat -f
 }
 
 # 获取或生成端口（允许用户输入或使用随机端口）
@@ -717,14 +452,15 @@ generate_node_config() {
         return 1
     fi
     echo -e "${CYAN}请选择要生成的协议（可多选，用空格分隔）:${RESET}"
-    echo "1. Hysteria2"
+    echo "1. Snell"
     echo "2. Shadowsocks"
     echo "3. VLESS+Vision+Reality"
-    echo "4. AnyTLS"
-    echo "5. SOCKS5代理"
-    echo "6. HTTP代理"
-    echo "7. 全部"
-    read -p "请输入选项编号 (1-7): " choices
+    echo "4. Hysteria2"
+    echo "5. AnyTLS"
+    echo "6. SOCKS5代理"
+    echo "7. HTTP代理"
+    echo "8. 全部"
+    read -p "请输入选项编号 (1-8): " choices
     # 检查必要的命令
     check_ss_command
     check_jq_command
@@ -741,40 +477,70 @@ generate_node_config() {
     fi
     local new_inbounds
     new_inbounds=$(echo "$current_config" | jq '.inbounds')
-    if [[ "$choices" == *"7"* ]] || [[ "$choices" == *"1"* ]]; then
-        # 获取 Hysteria2 端口
-        echo -e "${CYAN}=== 配置 Hysteria2 ===${RESET}"
-        hysteria_port=$(get_or_generate_port "Hysteria2" "$hysteria_port")
-        # 添加 Hysteria2
-        local hysteria_config
-        hysteria_config=$(jq -n \
-            --arg port "$hysteria_port" \
-            --arg password "$password" \
-            --arg cert_path "${CONFIG_DIR}/cert.pem" \
-            --arg key_path "${CONFIG_DIR}/private.key" \
-            '{
-                type: "hysteria2",
-                tag: "hysteria-in",
-                listen: "0.0.0.0",
-                listen_port: ($port | tonumber),
-                users: [{password: $password}],
-                masquerade: "https://bing.com",
-                tls: {
-                    enabled: true,
-                    alpn: ["h3"],
-                    certificate_path: $cert_path,
-                    key_path: $key_path
-                }
-            }')
-
-        if [ -z "$hysteria_config" ] || [ "$hysteria_config" == "null" ]; then
-            echo -e "${RED}错误: Hysteria2 配置生成失败${RESET}"
-            return 1
+    if [[ "$choices" == *"8"* ]] || [[ "$choices" == *"1"* ]]; then
+        # 重置上次操作的确认状态
+        continue_snell=""
+        # 检查 sing-box 版本是否支持 Snell (自 1.14.0 起支持)
+        if ! check_snell_supported; then
+            echo -e "${YELLOW}警告: 当前 sing-box 版本不支持 Snell 协议，需要 1.14.0 及以上版本！${RESET}"
+            local current_version
+            current_version=$(get_sing_box_version)
+            echo -e "${YELLOW}当前版本: ${current_version:-未知}${RESET}"
+            read -p "$(echo -e "${RED}此配置可能导致 sing-box 启动失败，是否继续生成？(y/N) ${RESET}")" continue_snell
+            continue_snell=${continue_snell:-N}
+            if [[ ! "$continue_snell" =~ ^[Yy]$ ]]; then
+                echo -e "${YELLOW}已取消生成 Snell 配置${RESET}"
+            else
+                echo -e "${YELLOW}继续生成 Snell 配置，请确保安装支持 Snell 的 sing-box 版本${RESET}"
+            fi
         fi
+        if [[ "$continue_snell" =~ ^[Yy]$ ]] || check_snell_supported; then
+            # 检查是否已有 Snell 版本设置
+            if [ -z "$snell_version" ]; then
+                snell_version=5
+            fi
+            # 获取 Snell 版本
+            read -p "请输入 Snell 版本 (5-6，可直接回车默认 5): " snell_version_input
+            if [ -n "$snell_version_input" ]; then
+                if [[ "$snell_version_input" == "5" ]] || [[ "$snell_version_input" == "6" ]]; then
+                    snell_version=$snell_version_input
+                else
+                    echo -e "${YELLOW}无效的 Snell 版本，使用默认版本 5${RESET}"
+                    snell_version=5
+                fi
+            fi
+            # 获取 Snell 端口
+            echo -e "${CYAN}=== 配置 Snell ===${RESET}"
+            snell_port=$(get_or_generate_port "Snell" "$snell_port")
+            # 确保 psk 长度满足 v6 要求 (12-255 字节)
+            if [ "$snell_version" == "6" ] && [ ${#snell_psk} -lt 12 ]; then
+                echo -e "${YELLOW}Snell v6 要求 psk 长度为 12-255 字节，重新生成 psk${RESET}"
+                snell_psk=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
+            fi
+            # 添加 Snell
+            local snell_config
+            snell_config=$(jq -n \
+                --arg port "$snell_port" \
+                --arg psk "$snell_psk" \
+                --argjson version "$snell_version" \
+                '{
+                    type: "snell",
+                    tag: "snell-in",
+                    listen: "0.0.0.0",
+                    listen_port: ($port | tonumber),
+                    version: $version,
+                    psk: $psk
+                }')
 
-        new_inbounds=$(jq --argjson item "$hysteria_config" '. += [$item]' <<< "$new_inbounds")
+            if [ -z "$snell_config" ] || [ "$snell_config" == "null" ]; then
+                echo -e "${RED}错误: Snell 配置生成失败${RESET}"
+                return 1
+            fi
+
+            new_inbounds=$(jq --argjson item "$snell_config" '. += [$item]' <<< "$new_inbounds")
+        fi
     fi
-    if [[ "$choices" == *"7"* ]] || [[ "$choices" == *"2"* ]]; then
+    if [[ "$choices" == *"8"* ]] || [[ "$choices" == *"2"* ]]; then
         # 获取 Shadowsocks 端口
         echo -e "${CYAN}=== 配置 Shadowsocks ===${RESET}"
         shadowsocks_port=$(get_or_generate_port "Shadowsocks" "$shadowsocks_port")
@@ -800,7 +566,7 @@ generate_node_config() {
 
         new_inbounds=$(jq --argjson item "$shadowsocks_config" '. += [$item]' <<< "$new_inbounds")
     fi
-    if [[ "$choices" == *"7"* ]] || [[ "$choices" == *"3"* ]]; then
+    if [[ "$choices" == *"8"* ]] || [[ "$choices" == *"3"* ]]; then
         # 获取 VLESS 端口
         echo -e "${CYAN}=== 配置 VLESS+Vision+Reality ===${RESET}"
         vless_port=$(get_or_generate_port "VLESS" "$vless_port")
@@ -841,7 +607,40 @@ generate_node_config() {
 
         new_inbounds=$(jq --argjson item "$vless_config" '. += [$item]' <<< "$new_inbounds")
     fi
-    if [[ "$choices" == *"7"* ]] || [[ "$choices" == *"4"* ]]; then
+    if [[ "$choices" == *"8"* ]] || [[ "$choices" == *"4"* ]]; then
+        # 获取 Hysteria2 端口
+        echo -e "${CYAN}=== 配置 Hysteria2 ===${RESET}"
+        hysteria_port=$(get_or_generate_port "Hysteria2" "$hysteria_port")
+        # 添加 Hysteria2
+        local hysteria_config
+        hysteria_config=$(jq -n \
+            --arg port "$hysteria_port" \
+            --arg password "$password" \
+            --arg cert_path "${CONFIG_DIR}/cert.pem" \
+            --arg key_path "${CONFIG_DIR}/private.key" \
+            '{
+                type: "hysteria2",
+                tag: "hysteria-in",
+                listen: "0.0.0.0",
+                listen_port: ($port | tonumber),
+                users: [{password: $password}],
+                masquerade: "https://bing.com",
+                tls: {
+                    enabled: true,
+                    alpn: ["h3"],
+                    certificate_path: $cert_path,
+                    key_path: $key_path
+                }
+            }')
+
+        if [ -z "$hysteria_config" ] || [ "$hysteria_config" == "null" ]; then
+            echo -e "${RED}错误: Hysteria2 配置生成失败${RESET}"
+            return 1
+        fi
+
+        new_inbounds=$(jq --argjson item "$hysteria_config" '. += [$item]' <<< "$new_inbounds")
+    fi
+    if [[ "$choices" == *"8"* ]] || [[ "$choices" == *"5"* ]]; then
         # 获取 AnyTLS 端口
         echo -e "${CYAN}=== 配置 AnyTLS ===${RESET}"
         anytls_port=$(get_or_generate_port "AnyTLS" "$anytls_port")
@@ -876,7 +675,7 @@ generate_node_config() {
 
         new_inbounds=$(jq --argjson item "$anytls_config" '. += [$item]' <<< "$new_inbounds")
     fi
-    if [[ "$choices" == *"7"* ]] || [[ "$choices" == *"5"* ]]; then
+    if [[ "$choices" == *"8"* ]] || [[ "$choices" == *"6"* ]]; then
         # 获取 SOCKS5 端口
         echo -e "${CYAN}=== 配置 SOCKS5 代理 ===${RESET}"
         socks_port=$(get_or_generate_port "SOCKS5" "$socks_port")
@@ -902,7 +701,7 @@ generate_node_config() {
         fi
         new_inbounds=$(jq --argjson item "$socks_config" '. += [$item]' <<< "$new_inbounds")
     fi
-    if [[ "$choices" == *"7"* ]] || [[ "$choices" == *"6"* ]]; then
+    if [[ "$choices" == *"8"* ]] || [[ "$choices" == *"7"* ]]; then
         # 获取 HTTP 端口
         echo -e "${CYAN}=== 配置 HTTP 代理 ===${RESET}"
         http_port=$(get_or_generate_port "HTTP" "$http_port")
@@ -1088,37 +887,6 @@ disable_bbr() {
     sysctl net.ipv4.tcp_congestion_control
 }
 
-# 从 Snell 配置文件读取参数
-parse_snell_config() {
-    if [ ! -f "${SNELL_CONFIG_FILE}" ]; then
-        echo -e "${YELLOW}Snell 配置文件不存在: ${SNELL_CONFIG_FILE}${RESET}"
-        return 1
-    fi
-
-    # 从 snell-server.conf 读取端口和 PSK
-    local snell_config=$(cat "${SNELL_CONFIG_FILE}" 2>/dev/null)
-    if [ -n "$snell_config" ]; then
-        # 提取 listen 行中的端口
-        local extracted_port=$(echo "$snell_config" | grep -E "^listen\s*=" | sed -E 's/^listen\s*=\s*[^:]*:([0-9]+)/\1/')
-        # 提取 psk
-        local extracted_psk=$(echo "$snell_config" | grep -E "^psk\s*=" | sed -E 's/^psk\s*=\s*//')
-
-        # 设置全局变量（如果调用者需要）
-        snell_port="$extracted_port"
-        snell_psk="$extracted_psk"
-    fi
-
-    # 获取本机 IP 和国家（如果未设置）
-    if [ -z "$host_ip" ]; then
-        host_ip=$(curl -s http://checkip.amazonaws.com 2>/dev/null || echo "未知")
-    fi
-    if [ -z "$ip_country" ]; then
-        ip_country=$(curl -s "http://ipinfo.io/${host_ip}/country" 2>/dev/null || echo "未知")
-    fi
-
-    return 0
-}
-
 # 显示配置来源信息
 show_config_source_info() {
     echo -e "${CYAN}=== 配置来源信息 ===${RESET}"
@@ -1133,24 +901,6 @@ show_config_source_info() {
     else
         echo -e "${RED}✗ Sing-box 配置文件不存在${RESET}"
     fi
-
-    # Snell 配置
-    if [ -f "${SNELL_CONFIG_FILE}" ]; then
-        echo -e "${GREEN}✓ Snell 配置文件: ${SNELL_CONFIG_FILE}${RESET}"
-        # 使用 parse_snell_config 函数读取配置
-        if parse_snell_config; then
-            echo -e "  端口: ${snell_port:-未设置}"
-            echo -e "  PSK: ${snell_psk:0:10}... (部分显示)"
-            echo -e "  主机IP: ${host_ip:-未设置}"
-            echo -e "  国家: ${ip_country:-未设置}"
-        else
-            echo -e "  ${YELLOW}无法解析配置文件${RESET}"
-        fi
-    else
-        echo -e "${YELLOW}○ Snell 配置文件不存在${RESET}"
-    fi
-
-    # 所有配置直接从配置文件读取
 
     echo ""
 }
@@ -1179,6 +929,8 @@ parse_config_from_json() {
         hysteria_port=$(generate_unused_port)
         anytls_port=$(generate_unused_port)
         shadowsocks_port=$(generate_unused_port)
+        snell_port=$(generate_unused_port)
+        snell_psk=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
         ss_password=$(sing-box generate rand 32 --base64 2>/dev/null || tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
         password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
         socks_port=$(generate_unused_port)
@@ -1209,6 +961,7 @@ parse_config_from_json() {
         extract_protocol_from_config "anytls"
         extract_protocol_from_config "socks"
         extract_protocol_from_config "http"
+        extract_protocol_from_config "snell"
 
         # 如果某些参数未设置，使用默认值
         if [ -z "$vless_port" ]; then
@@ -1259,6 +1012,15 @@ parse_config_from_json() {
         fi
         if [ -z "$http_password" ]; then
             http_password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
+        fi
+        if [ -z "$snell_port" ]; then
+            snell_port=$(generate_unused_port)
+        fi
+        if [ -z "$snell_psk" ]; then
+            snell_psk=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
+        fi
+        if [ -z "$snell_version" ]; then
+            snell_version=5
         fi
     fi
 
@@ -1331,6 +1093,18 @@ extract_protocol_from_config() {
                 [ -n "$port" ] && [ "$port" != "null" ] && http_port=$port
                 [ -n "$user" ] && [ "$user" != "null" ] && http_username=$user
                 [ -n "$pass" ] && [ "$pass" != "null" ] && http_password=$pass
+                return 0
+            fi
+            ;;
+        snell)
+            config_data=$(jq -r '.inbounds[] | select(.type == "snell") | {port: .listen_port, psk: .psk, version: .version}' "${CONFIG_FILE}" 2>/dev/null)
+            if [ -n "$config_data" ] && [ "$config_data" != "null" ]; then
+                local port=$(echo "$config_data" | jq -r '.port')
+                local psk=$(echo "$config_data" | jq -r '.psk')
+                local ver=$(echo "$config_data" | jq -r '.version')
+                [ -n "$port" ] && [ "$port" != "null" ] && snell_port=$port
+                [ -n "$psk" ] && [ "$psk" != "null" ] && snell_psk=$psk
+                [ -n "$ver" ] && [ "$ver" != "null" ] && snell_version=$ver
                 return 0
             fi
             ;;
@@ -1407,6 +1181,11 @@ generate_client_config() {
                 local uri="http://${http_username}:${http_password}@${host_ip}:${http_port}#${ip_country}-http"
                 echo -e "==== HTTP 代理 ====\n${uri}\n"
                 ;;
+            snell)
+                local uri="snell://${snell_psk}@${host_ip}:${snell_port}?version=${snell_version:-5}#${ip_country}-snell"
+                echo -e "==== Snell ====\n${uri}\n"
+                echo -e "Surge/Clash 格式:\n${ip_country}-snell = snell, ${host_ip}, ${snell_port}, psk = ${snell_psk}, version = ${snell_version:-5}\n"
+                ;;
         esac
     done
 }
@@ -1466,6 +1245,12 @@ check_sing_box() {
     if jq -e '.inbounds[] | select(.type == "http")' "${CONFIG_FILE}" &>/dev/null; then
         available_protocols+=("http")
         protocol_names+=("HTTP 代理")
+    fi
+
+    # 检查 Snell
+    if jq -e '.inbounds[] | select(.type == "snell")' "${CONFIG_FILE}" &>/dev/null; then
+        available_protocols+=("snell")
+        protocol_names+=("Snell")
     fi
 
     # 如果没有找到任何协议
@@ -1825,7 +1610,7 @@ delete_node_config() {
     fi
 
     # 获取所有节点类型的配置（排除 direct 类型）
-    local node_types=("hysteria2" "vless" "anytls" "shadowsocks" "socks" "http")
+    local node_types=("hysteria2" "vless" "anytls" "shadowsocks" "socks" "http" "snell")
     local available_nodes=()
     local node_display_names=()
     local node_info=()
@@ -1859,6 +1644,9 @@ delete_node_config() {
                         ;;
                     http)
                         node_display_names+=("HTTP 代理 (端口: $port)")
+                        ;;
+                    snell)
+                        node_display_names+=("Snell (端口: $port)")
                         ;;
                 esac
             done <<< "$nodes"
@@ -1947,11 +1735,6 @@ show_menu() {
     is_sing_box_running
     sing_box_running=$?
 
-    is_snell_installed
-    snell_installed=$?
-    is_snell_running
-    snell_running=$?
-
     # 检查 BBR 状态
     check_bbr_status
     bbr_status=$?
@@ -1959,8 +1742,11 @@ show_menu() {
     echo -e "${GREEN}=== sing-box 管理工具 ===${RESET}"
     echo -e "Sing-box 安装状态: $(if [ ${sing_box_installed} -eq 0 ]; then echo -e "${GREEN}已安装${RESET}"; else echo -e "${RED}未安装${RESET}"; fi)"
     echo -e "Sing-box 运行状态: $(if [ ${sing_box_running} -eq 0 ]; then echo -e "${GREEN}已运行${RESET}"; else echo -e "${RED}未运行${RESET}"; fi)"
-    echo -e "Snell 安装状态: $(if [ ${snell_installed} -eq 0 ]; then echo -e "${GREEN}已安装${RESET}"; else echo -e "${RED}未安装${RESET}"; fi)"
-    echo -e "Snell 运行状态: $(if [ ${snell_running} -eq 0 ]; then echo -e "${GREEN}已运行${RESET}"; else echo -e "${RED}未运行${RESET}"; fi)"
+    if [ ${sing_box_installed} -eq 0 ]; then
+        local installed_version
+        installed_version=$(get_sing_box_version 2>/dev/null)
+        echo -e "Sing-box 版本: ${CYAN}${installed_version:-未知}${RESET} ($(if check_snell_supported; then echo -e "${GREEN}支持 Snell${RESET}"; else echo -e "${YELLOW}不支持 Snell${RESET}"; fi))"
+    fi
     echo -e "BBR 状态: $(if [ ${bbr_status} -eq 0 ]; then echo -e "${GREEN}已启用${RESET}"; else echo -e "${RED}未启用${RESET}"; fi)"
     echo ""
     echo "1. 安装 sing-box 服务"
@@ -1985,33 +1771,16 @@ show_menu() {
     fi
 
     echo ""
-    echo -e "${PURPLE}=== Snell 代理管理 ===${RESET}"
-    echo "13. 安装 Snell 服务"
-    echo "14. 卸载 Snell 服务"
-    if [ ${snell_installed} -eq 0 ]; then
-        if [ ${snell_running} -eq 0 ]; then
-            echo "15. 停止 Snell 服务"
-        else
-            echo "15. 启动 Snell 服务"
-        fi
-        echo "16. 重启 Snell 服务"
-        echo "17. 查看 Snell 状态"
-        echo "18. 生成 Snell 配置"
-        echo "19. 查看 Snell 配置"
-        echo "20. 删除 Snell 配置"
-    fi
-
-    echo ""
     echo -e "${PURPLE}=== BBR 优化管理 ===${RESET}"
     if [ ${bbr_status} -eq 0 ]; then
-        echo "21. 关闭 BBR"
+        echo "13. 关闭 BBR"
     else
-        echo "21. 启用 BBR"
+        echo "13. 启用 BBR"
     fi
 
     echo ""
     echo -e "${PURPLE}=== 配置管理 ===${RESET}"
-    echo "22. 查看配置来源信息"
+    echo "14. 查看配置来源信息"
 
     echo "0. 退出"
     echo -e "${GREEN}=========================${RESET}"
@@ -2117,71 +1886,6 @@ while true; do
             fi
             ;;
         13)
-            if [ ${snell_installed} -eq 0 ]; then
-                echo -e "${YELLOW}Snell 已经安装！${RESET}"
-            else
-                install_snell
-            fi
-            ;;
-        14)
-            if [ ${snell_installed} -eq 0 ]; then
-                uninstall_snell
-            else
-                echo -e "${YELLOW}Snell 尚未安装！${RESET}"
-            fi
-            ;;
-        15)
-            if [ ${snell_installed} -eq 0 ]; then
-                if [ ${snell_running} -eq 0 ]; then
-                    stop_snell
-                else
-                    start_snell
-                fi
-            else
-                echo -e "${RED}Snell 尚未安装！${RESET}"
-            fi
-            ;;
-        16)
-            if [ ${snell_installed} -eq 0 ]; then
-                restart_snell
-            else
-                echo -e "${RED}Snell 尚未安装！${RESET}"
-            fi
-            ;;
-        17)
-            if [ ${snell_installed} -eq 0 ]; then
-                status_snell
-            else
-                echo -e "${RED}Snell 尚未安装！${RESET}"
-            fi
-            ;;
-        18)
-            if [ ${snell_installed} -eq 0 ]; then
-                generate_snell_config
-            else
-                echo -e "${RED}Snell 尚未安装！${RESET}"
-            fi
-            ;;
-        19)
-            if [ ${snell_installed} -eq 0 ]; then
-                if [ -f "${SNELL_CONFIG_DIR}/config.txt" ]; then
-                    echo -e "${CYAN}=== Snell 配置信息 ===${RESET}"
-                    cat "${SNELL_CONFIG_DIR}/config.txt"
-                else
-                    echo -e "${YELLOW}未找到 Snell 配置文件${RESET}"
-                fi
-            else
-                echo -e "${RED}Snell 尚未安装！${RESET}"
-            fi
-            ;;
-        20)
-            if [ ${snell_installed} -eq 0 ]; then
-                delete_snell_config
-            else
-                echo -e "${RED}Snell 尚未安装！${RESET}"
-            fi
-            ;;
-        21)
             check_bbr_status
             if [ $? -eq 0 ]; then
                 disable_bbr
@@ -2189,7 +1893,7 @@ while true; do
                 enable_bbr
             fi
             ;;
-        22)
+        14)
             show_config_source_info
             ;;
         0)
