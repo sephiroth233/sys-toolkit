@@ -15,12 +15,62 @@ CONFIG_FILE="${CONFIG_DIR}/config.json"
 SERVICE_NAME="sing-box"
 DIRECT_CONFIG_FILE="${CONFIG_DIR}/direct_configs.conf"
 
+# 协议注册表：顺序即菜单显示与生成顺序，新增协议只需在此追加
+PROTOCOL_LIST=(snell shadowsocks vless hysteria2 anytls socks http)
+# "全部"选项编号 = 协议数量 + 1
+ALL_CHOICE=$(( ${#PROTOCOL_LIST[@]} + 1 ))
+
 # 检查 root 权限
 check_root() {
     if [ "$(id -u)" != "0" ]; then
         echo -e "${RED}请使用 root 权限执行此脚本！${RESET}"
         exit 1
     fi
+}
+
+# 询问确认，默认回答为 N 时用户直接回车返回 1
+# 用法: confirm_prompt "要执行的操作描述" [默认答案 y|n]
+confirm_prompt() {
+    local message=$1 default=${2:-n}
+    local suffix
+    if [ "$default" == "y" ]; then
+        suffix="Y/n"
+    else
+        suffix="y/N"
+    fi
+    read -p "$(echo -e "${RED}确定要${message}吗? (${suffix}) ${RESET}")" answer
+    answer=${answer:-$default}
+    [[ "$answer" =~ ^[Yy]$ ]]
+}
+
+# 判断多选输入是否包含编号 n（空格分隔，首尾安全匹配）
+choice_has() {
+    local n="$1" input="$2"
+    echo "${input}" | tr -s ' ' | awk -v n="$n" '{ for (i = 1; i <= NF; i++) if ($i == n) found = 1 } END { exit !found }'
+}
+
+# 生成随机字母数字串（LC_ALL=C 避免部分系统 tr 在 UTF-8 locale 下报错）
+rand_alnum() {
+    LC_ALL=C tr -dc A-Za-z0-9 </dev/urandom | head -c "${1:-32}"
+}
+
+# 生成随机小写字母串
+rand_alpha() {
+    LC_ALL=C tr -dc a-z </dev/urandom | head -c "${1:-8}"
+}
+
+# 协议显示名称（菜单、列表共用）
+proto_display() {
+    case "$1" in
+        snell) echo "Snell";;
+        shadowsocks) echo "Shadowsocks";;
+        vless) echo "VLESS+Vision+Reality";;
+        hysteria2) echo "Hysteria2";;
+        anytls) echo "AnyTLS";;
+        socks) echo "SOCKS5代理";;
+        http) echo "HTTP代理";;
+        *) echo "$1";;
+    esac
 }
 
 # 检查 sing-box 是否已安装
@@ -62,67 +112,40 @@ check_snell_supported() {
     return 1
 }
 
-# 检查 ss 命令是否可用
-check_ss_command() {
-    if ! command -v ss &> /dev/null; then
-        echo -e "${YELLOW}ss 命令未找到，正在尝试自动安装 iproute2 ${RESET}"
-
-        # 检测包管理器并安装
-        if command -v apt-get &> /dev/null; then
-            apt-get update && apt-get install -y iproute2
-        elif command -v dnf &> /dev/null; then
-            dnf install -y iproute
-        elif command -v yum &> /dev/null; then
-            yum install -y iproute
-        elif command -v pacman &> /dev/null; then
-            pacman -Sy --noconfirm iproute2
-        elif command -v zypper &> /dev/null; then
-            zypper install -y iproute2
-        else
-            echo -e "${RED}无法检测到支持的包管理器，请手动安装 iproute2 包${RESET}"
-            exit 1
-        fi
-
-        # 再次检查是否安装成功
-        if command -v ss &> /dev/null; then
-            echo -e "${GREEN}iproute2 安装成功，ss 命令已可用${RESET}"
-        else
-            echo -e "${RED}自动安装失败，请手动安装 iproute2 包${RESET}"
-            exit 1
-        fi
+# 通过系统包管理器安装缺失的命令
+install_package() {
+    local pkg=$1
+    if command -v apt-get &> /dev/null; then
+        apt-get update && apt-get install -y "${pkg}"
+    elif command -v dnf &> /dev/null; then
+        dnf install -y "${pkg}"
+    elif command -v yum &> /dev/null; then
+        yum install -y "${pkg}"
+    elif command -v pacman &> /dev/null; then
+        pacman -Sy --noconfirm "${pkg}"
+    elif command -v zypper &> /dev/null; then
+        zypper install -y "${pkg}"
     else
-        echo -e "${GREEN}ss 命令可用${RESET}"
+        echo -e "${RED}无法检测到支持的包管理器，请手动安装 ${pkg} 包${RESET}"
+        exit 1
     fi
 }
 
-# 检查 jq 命令是否可用
-check_jq_command() {
-    if ! command -v jq &> /dev/null; then
-        echo -e "${YELLOW}jq 命令未找到，正在尝试自动安装 jq ${RESET}"
-
-        # 检测包管理器并安装
-        if command -v apt-get &> /dev/null; then
-            apt-get update && apt-get install -y jq
-        elif command -v dnf &> /dev/null; then
-            dnf install -y jq
-        elif command -v yum &> /dev/null; then
-            yum install -y jq
-        elif command -v pacman &> /dev/null; then
-            pacman -Sy --noconfirm jq
-        elif command -v zypper &> /dev/null; then
-            zypper install -y jq
-        else
-            echo -e "${RED}无法检测到支持的包管理器，请手动安装 jq 包${RESET}"
-            exit 1
-        fi
-
-        # 再次检查是否安装成功
-        if command -v jq &> /dev/null; then
-            echo -e "${GREEN}jq 安装成功，jq 命令已可用${RESET}"
-        else
-            echo -e "${RED}自动安装失败，请手动安装 jq 包${RESET}"
-            exit 1
-        fi
+# 检查命令是否可用，缺失时安装对应包
+# 用法: ensure_command <命令名> <包名> [备选包名]（备选用于不同发行版包名差异）
+ensure_command() {
+    local cmd=$1 pkg=$2 alt_pkg=$3
+    if command -v "${cmd}" &> /dev/null; then
+        echo -e "${GREEN}${cmd} 命令可用${RESET}"
+        return 0
+    fi
+    echo -e "${YELLOW}${cmd} 命令未找到，正在尝试自动安装 ${pkg} ${RESET}"
+    install_package "${pkg}" || install_package "${alt_pkg}"
+    if command -v "${cmd}" &> /dev/null; then
+        echo -e "${GREEN}${pkg} 安装成功，${cmd} 命令已可用${RESET}"
+    else
+        echo -e "${RED}自动安装失败，请手动安装 ${pkg} 包${RESET}"
+        exit 1
     fi
 }
 
@@ -205,28 +228,8 @@ install_sing_box() {
         }
     fi
 
-    # 生成随机端口和密码
-    check_ss_command
-    vless_port=$(generate_unused_port)
-    hysteria_port=$(generate_unused_port)
-    anytls_port=$(generate_unused_port)
-    shadowsocks_port=$(generate_unused_port)
-    snell_port=$(generate_unused_port)
-    snell_psk=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
-    ss_password=$(sing-box generate rand --base64 32)
-    password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
-    socks_port=$(generate_unused_port)
-    http_port=$(generate_unused_port)
-    socks_username=$(tr -dc a-z </dev/urandom | head -c 8)
-    socks_password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
-    http_username=$(tr -dc a-z </dev/urandom | head -c 8)
-    http_password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
-
-    # 生成 UUID 和 Reality 密钥对
-    uuid=$(sing-box generate uuid)
-    reality_output=$(sing-box generate reality-keypair)
-    private_key=$(echo "${reality_output}" | grep -oP 'PrivateKey:\s*\K.*')
-    public_key=$(echo "${reality_output}" | grep -oP 'PublicKey:\s*\K.*')
+    # 生成随机端口、密码和密钥对
+    init_protocol_params
 
     # 生成自签名证书
     mkdir -p "${CONFIG_DIR}"
@@ -313,54 +316,48 @@ EOF
 }
 
 uninstall_sing_box() {
-    read -p "$(echo -e "${RED}确定要卸载 sing-box 吗? (Y/n) ${RESET}")" choice
-    choice=${choice:-Y}  # 默认设置为 Y
-    case "${choice}" in
-        y|Y)
-            echo -e "${CYAN}正在卸载 sing-box${RESET}"
+    if ! confirm_prompt "卸载 sing-box" y; then
+        echo -e "${YELLOW}已取消卸载操作${RESET}"
+        return 0
+    fi
+    echo -e "${CYAN}正在卸载 sing-box${RESET}"
 
-            # 停止 sing-box 服务
-            systemctl stop "${SERVICE_NAME}" || {
-                echo -e "${RED}停止 sing-box 服务失败。${RESET}"
-            }
+    # 停止 sing-box 服务
+    systemctl stop "${SERVICE_NAME}" || {
+        echo -e "${RED}停止 sing-box 服务失败。${RESET}"
+    }
 
-            # 禁用 sing-box 服务
-            systemctl disable "${SERVICE_NAME}" || {
-                echo -e "${RED}禁用 sing-box 服务失败。${RESET}"
-            }
+    # 禁用 sing-box 服务
+    systemctl disable "${SERVICE_NAME}" || {
+        echo -e "${RED}禁用 sing-box 服务失败。${RESET}"
+    }
 
-            # 卸载 sing-box
-            dpkg --purge sing-box || {
-                echo -e "${YELLOW}无法通过 dpkg 卸载 sing-box，可能未通过 apt 安装。${RESET}"
-            }
+    # 卸载 sing-box
+    dpkg --purge sing-box || {
+        echo -e "${YELLOW}无法通过 dpkg 卸载 sing-box，可能未通过 apt 安装。${RESET}"
+    }
 
-            # 删除配置目录和所有相关文件
-            if [ -d "${CONFIG_DIR}" ]; then
-                echo -e "${YELLOW}正在删除配置目录: ${CONFIG_DIR}${RESET}"
-                rm -rf "${CONFIG_DIR}" || {
-                    echo -e "${YELLOW}无法删除配置目录 ${CONFIG_DIR}${RESET}"
-                }
-            fi
+    # 删除配置目录和所有相关文件
+    if [ -d "${CONFIG_DIR}" ]; then
+        echo -e "${YELLOW}正在删除配置目录: ${CONFIG_DIR}${RESET}"
+        rm -rf "${CONFIG_DIR}" || {
+            echo -e "${YELLOW}无法删除配置目录 ${CONFIG_DIR}${RESET}"
+        }
+    fi
 
+    # 重新加载 systemd
+    systemctl daemon-reload || {
+        echo -e "${YELLOW}无法重新加载 systemd 守护进程。${RESET}"
+    }
 
-            # 重新加载 systemd
-            systemctl daemon-reload || {
-                echo -e "${YELLOW}无法重新加载 systemd 守护进程。${RESET}"
-            }
+    # 删除 sing-box 可执行文件，如果存在
+    if [ -f "/usr/local/bin/sing-box" ]; then
+        rm /usr/local/bin/sing-box || {
+            echo -e "${YELLOW}无法删除 /usr/local/bin/sing-box。${RESET}"
+        }
+    fi
 
-            # 删除 sing-box 可执行文件，如果存在
-            if [ -f "/usr/local/bin/sing-box" ]; then
-                rm /usr/local/bin/sing-box || {
-                    echo -e "${YELLOW}无法删除 /usr/local/bin/sing-box。${RESET}"
-                }
-            fi
-
-            echo -e "${GREEN}sing-box 卸载成功${RESET}"
-            ;;
-        *)
-            echo -e "${YELLOW}已取消卸载操作${RESET}"
-            ;;
-    esac
+    echo -e "${GREEN}sing-box 卸载成功${RESET}"
 }
 
 # 启动 sing-box
@@ -432,6 +429,316 @@ get_or_generate_port() {
     done
 }
 
+# 生成单个协议的 inbound 配置（输出到 stdout）
+# 每种协议一个 case 分支，新增协议时此处加一分支即可
+build_inbound() {
+    local type=$1
+    local display_name
+    display_name=$(proto_display "$type")
+
+    case "$type" in
+        snell)
+            # 检查 sing-box 版本是否支持 Snell (自 1.14.0 起支持)
+            if ! check_snell_supported; then
+                echo -e "${YELLOW}警告: 当前 sing-box 版本不支持 Snell 协议，需要 1.14.0 及以上版本！${RESET}"
+                local current_version
+                current_version=$(get_sing_box_version)
+                echo -e "${YELLOW}当前版本: ${current_version:-未知}${RESET}"
+                read -p "$(echo -e "${RED}此配置可能导致 sing-box 启动失败，是否继续生成？(y/N) ${RESET}")" confirm_snell
+                if [[ ! "${confirm_snell:-N}" =~ ^[Yy]$ ]]; then
+                    echo -e "${YELLOW}已取消生成 Snell 配置${RESET}"
+                    return 1
+                fi
+                echo -e "${YELLOW}继续生成 Snell 配置，请确保安装支持 Snell 的 sing-box 版本${RESET}"
+            fi
+            # 检查是否已有 Snell 版本设置
+            [ -z "$snell_version" ] && snell_version=5
+            read -p "请输入 Snell 版本 (5-6，可直接回车默认 5): " snell_version_input
+            if [[ -n "$snell_version_input" ]]; then
+                if [[ "$snell_version_input" == "5" ]] || [[ "$snell_version_input" == "6" ]]; then
+                    snell_version=$snell_version_input
+                elif [[ "$snell_version_input" == "4" ]] || [[ "$snell_version_input" == "3" ]]; then
+                    echo -e "${YELLOW}Snell 版本 4/3 仅支持客户端，服务端需使用 5/6，使用默认版本 5${RESET}"
+                    snell_version=5
+                else
+                    echo -e "${YELLOW}无效的 Snell 版本，使用默认版本 5${RESET}"
+                    snell_version=5
+                fi
+            fi
+            # 确保 psk 长度满足 v6 要求 (12-255 字节)
+            if [ "$snell_version" == "6" ] && [ ${#snell_psk} -lt 12 ]; then
+                echo -e "${YELLOW}Snell v6 要求 psk 长度为 12-255 字节，重新生成 psk${RESET}"
+                snell_psk=$(rand_alnum 32)
+            fi
+            snell_port=$(get_or_generate_port "$display_name" "$snell_port")
+            jq -n \
+                --arg port "$snell_port" \
+                --arg psk "$snell_psk" \
+                --argjson version "$snell_version" \
+                '{
+                    type: "snell",
+                    tag: "snell-in",
+                    listen: "0.0.0.0",
+                    listen_port: ($port | tonumber),
+                    version: $version,
+                    psk: $psk
+                }'
+            ;;
+        shadowsocks)
+            shadowsocks_port=$(get_or_generate_port "$display_name" "$shadowsocks_port")
+            jq -n \
+                --arg port "$shadowsocks_port" \
+                --arg password "$ss_password" \
+                '{
+                    type: "shadowsocks",
+                    tag: "shadowsocks-in",
+                    listen: "0.0.0.0",
+                    listen_port: ($port | tonumber),
+                    method: "2022-blake3-aes-256-gcm",
+                    password: $password,
+                    multiplex: {enabled: true}
+                }'
+            ;;
+        vless)
+            vless_port=$(get_or_generate_port "$display_name" "$vless_port")
+            jq -n \
+                --arg port "$vless_port" \
+                --arg uuid "$uuid" \
+                --arg private_key "$private_key" \
+                '{
+                    type: "vless",
+                    tag: "vless-in",
+                    listen: "0.0.0.0",
+                    listen_port: ($port | tonumber),
+                    users: [{
+                        uuid: $uuid,
+                        flow: "xtls-rprx-vision"
+                    }],
+                    tls: {
+                        enabled: true,
+                        server_name: "www.tesla.com",
+                        reality: {
+                            enabled: true,
+                            handshake: {
+                                server: "www.tesla.com",
+                                server_port: 443
+                            },
+                            private_key: $private_key,
+                            short_id: ["123abc"]
+                        }
+                    }
+                }'
+            ;;
+        hysteria2)
+            hysteria_port=$(get_or_generate_port "$display_name" "$hysteria_port")
+            jq -n \
+                --arg port "$hysteria_port" \
+                --arg password "$password" \
+                --arg cert_path "${CONFIG_DIR}/cert.pem" \
+                --arg key_path "${CONFIG_DIR}/private.key" \
+                '{
+                    type: "hysteria2",
+                    tag: "hysteria-in",
+                    listen: "0.0.0.0",
+                    listen_port: ($port | tonumber),
+                    users: [{password: $password}],
+                    masquerade: "https://bing.com",
+                    tls: {
+                        enabled: true,
+                        alpn: ["h3"],
+                        certificate_path: $cert_path,
+                        key_path: $key_path
+                    }
+                }'
+            ;;
+        anytls)
+            anytls_port=$(get_or_generate_port "$display_name" "$anytls_port")
+            jq -n \
+                --arg port "$anytls_port" \
+                --arg uuid "$uuid" \
+                --arg public_key "$public_key" \
+                --arg cert_path "${CONFIG_DIR}/cert.pem" \
+                --arg key_path "${CONFIG_DIR}/private.key" \
+                '{
+                    type: "anytls",
+                    tag: "anytls-in",
+                    listen: "0.0.0.0",
+                    listen_port: ($port | tonumber),
+                    users: [{
+                        name: $uuid,
+                        password: $public_key
+                    }],
+                    tls: {
+                        enabled: true,
+                        certificate_path: $cert_path,
+                        key_path: $key_path
+                    }
+                }'
+            ;;
+        socks)
+            socks_port=$(get_or_generate_port "$display_name" "$socks_port")
+            jq -n \
+                --arg port "$socks_port" \
+                --arg username "$socks_username" \
+                --arg password "$socks_password" \
+                '{
+                    type: "socks",
+                    tag: "socks-in",
+                    listen: "0.0.0.0",
+                    listen_port: ($port | tonumber),
+                    users: [{
+                        username: $username,
+                        password: $password
+                    }]
+                }'
+            ;;
+        http)
+            http_port=$(get_or_generate_port "$display_name" "$http_port")
+            jq -n \
+                --arg port "$http_port" \
+                --arg username "$http_username" \
+                --arg password "$http_password" \
+                '{
+                    type: "http",
+                    tag: "http-in",
+                    listen: "0.0.0.0",
+                    listen_port: ($port | tonumber),
+                    users: [{
+                        username: $username,
+                        password: $password
+                    }]
+                }'
+            ;;
+        *)
+            echo -e "${RED}错误: 未知的协议类型: ${type}${RESET}" >&2
+            return 1
+            ;;
+    esac
+}
+
+# 生成客户端连接 URI（输出到 stdout）
+build_client_uri() {
+    local type=$1
+
+    case "$type" in
+        hysteria2)
+            echo "hy2://${password}@${host_ip}:${hysteria_port}?insecure=1&&alpn=h3&sni=www.bing.com#${ip_country}-hy"
+            ;;
+        shadowsocks)
+            local encoded_password
+            encoded_password=$(urlencode "$ss_password")
+            echo "ss://2022-blake3-aes-256-gcm:${encoded_password}@${host_ip}:${shadowsocks_port}#${ip_country}-ss"
+            ;;
+        vless)
+            echo "vless://${uuid}@${host_ip}:${vless_port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.tesla.com&fp=chrome&pbk=${public_key}&sid=123abc&type=tcp&headerType=none#${ip_country}-vless"
+            ;;
+        anytls)
+            echo "anytls://${public_key}@${host_ip}:${anytls_port}/?sni=www.bing.com&insecure=1&alpn=h2,http/1.1#${ip_country}-anytls"
+            ;;
+        socks)
+            echo "socks5://${socks_username}:${socks_password}@${host_ip}:${socks_port}#${ip_country}-socks5"
+            ;;
+        http)
+            echo "http://${http_username}:${http_password}@${host_ip}:${http_port}#${ip_country}-http"
+            ;;
+        snell)
+            echo "snell://${snell_psk}@${host_ip}:${snell_port}?version=${snell_version:-5}#${ip_country}-snell"
+            ;;
+        *)
+            echo -e "${RED}错误: 未知的协议类型: ${type}${RESET}" >&2
+            return 1
+            ;;
+    esac
+}
+
+# 安全写入配置：备份 → 校验 → 写入 → 回滚
+save_config() {
+    local new_config=$1
+    # 验证生成的配置是否为有效的 JSON
+    if ! echo "$new_config" | jq empty 2>/dev/null; then
+        echo -e "${RED}错误: 生成的配置不是有效的 JSON 格式！${RESET}"
+        return 1
+    fi
+    # 备份当前配置
+    cp "${CONFIG_FILE}" "${CONFIG_FILE}.backup" || {
+        echo -e "${RED}错误: 无法备份配置文件${RESET}"
+        return 1
+    }
+    # 保存新配置
+    if ! echo "$new_config" > "${CONFIG_FILE}"; then
+        echo -e "${RED}错误: 无法写入配置文件${RESET}"
+        mv "${CONFIG_FILE}.backup" "${CONFIG_FILE}"
+        return 1
+    fi
+    # 验证写入的文件是否为有效的 JSON
+    if ! jq empty "${CONFIG_FILE}" 2>/dev/null; then
+        echo -e "${RED}错误: 写入配置文件失败，正在恢复备份...${RESET}"
+        mv "${CONFIG_FILE}.backup" "${CONFIG_FILE}"
+        return 1
+    fi
+    rm -f "${CONFIG_FILE}.backup"
+}
+
+# 将选中的协议批量添加到当前配置
+append_inbounds() {
+    local choices=$1
+    ensure_command ss iproute2 iproute
+    ensure_command jq jq
+
+    # 读取当前配置
+    local current_config
+    current_config=$(cat "${CONFIG_FILE}") || {
+        echo -e "${RED}错误: 无法读取配置文件${RESET}"
+        return 1
+    }
+    # 确保 inbounds 字段存在
+    current_config=$(echo "$current_config" | jq '.inbounds = (.inbounds // [])')
+
+    local new_inbounds
+    new_inbounds=$(echo "$current_config" | jq '.inbounds')
+
+    # 按注册表顺序生成选中协议
+    local i type inbound_config
+    if ! choice_has "$ALL_CHOICE" "$choices"; then
+        for i in "${!PROTOCOL_LIST[@]}"; do
+            type=${PROTOCOL_LIST[$i]}
+            if ! choice_has "$((i + 1))" "$choices"; then
+                continue
+            fi
+            echo -e "${CYAN}=== 配置 $(proto_display "$type") ===${RESET}"
+            if ! inbound_config=$(build_inbound "$type"); then
+                continue
+            fi
+            new_inbounds=$(jq --argjson item "$inbound_config" '. += [$item]' <<< "$new_inbounds")
+        done
+    else
+        for i in "${!PROTOCOL_LIST[@]}"; do
+            type=${PROTOCOL_LIST[$i]}
+            echo -e "${CYAN}=== 配置 $(proto_display "$type") ===${RESET}"
+            if ! inbound_config=$(build_inbound "$type"); then
+                continue
+            fi
+            new_inbounds=$(jq --argjson item "$inbound_config" '. += [$item]' <<< "$new_inbounds")
+        done
+    fi
+
+    # 检查 inbounds 是否为空
+    if [ "$new_inbounds" == "[]" ]; then
+        echo -e "${RED}错误: 未选择任何协议配置！${RESET}"
+        return 1
+    fi
+    # 更新配置文件
+    local new_config
+    new_config=$(jq --argjson inbounds "$new_inbounds" '.inbounds = $inbounds' <<< "$current_config")
+    if [ -z "$new_config" ] || [ "$new_config" == "null" ]; then
+        echo -e "${RED}错误: 配置生成失败，jq 操作返回空值！${RESET}"
+        return 1
+    fi
+    save_config "$new_config" || return 1
+    echo -e "${GREEN}节点配置已生成并更新到 ${CONFIG_FILE}${RESET}"
+    restart_sing_box
+}
+
 # 生成节点配置
 generate_node_config() {
     # 检查是否已安装
@@ -451,323 +758,18 @@ generate_node_config() {
         echo -e "${RED}无法从配置文件读取参数${RESET}"
         return 1
     fi
+
+    # 动态生成协议菜单
     echo -e "${CYAN}请选择要生成的协议（可多选，用空格分隔）:${RESET}"
-    echo "1. Snell"
-    echo "2. Shadowsocks"
-    echo "3. VLESS+Vision+Reality"
-    echo "4. Hysteria2"
-    echo "5. AnyTLS"
-    echo "6. SOCKS5代理"
-    echo "7. HTTP代理"
-    echo "8. 全部"
-    read -p "请输入选项编号 (1-8): " choices
-    # 检查必要的命令
-    check_ss_command
-    check_jq_command
-    # 读取当前配置
-    local current_config
-    current_config=$(cat "${CONFIG_FILE}") || {
-        echo -e "${RED}错误: 无法读取配置文件${RESET}"
-        return 1
-    }
-    # 检查当前配置是否有 inbounds 字段
-    if ! echo "$current_config" | jq -e '.inbounds' &>/dev/null; then
-        # 如果不存在 inbounds，创建一个空数组
-        current_config=$(echo "$current_config" | jq '.inbounds = []')
-    fi
-    local new_inbounds
-    new_inbounds=$(echo "$current_config" | jq '.inbounds')
-    if [[ "$choices" == *"8"* ]] || [[ "$choices" == *"1"* ]]; then
-        # 重置上次操作的确认状态
-        continue_snell=""
-        # 检查 sing-box 版本是否支持 Snell (自 1.14.0 起支持)
-        if ! check_snell_supported; then
-            echo -e "${YELLOW}警告: 当前 sing-box 版本不支持 Snell 协议，需要 1.14.0 及以上版本！${RESET}"
-            local current_version
-            current_version=$(get_sing_box_version)
-            echo -e "${YELLOW}当前版本: ${current_version:-未知}${RESET}"
-            read -p "$(echo -e "${RED}此配置可能导致 sing-box 启动失败，是否继续生成？(y/N) ${RESET}")" continue_snell
-            continue_snell=${continue_snell:-N}
-            if [[ ! "$continue_snell" =~ ^[Yy]$ ]]; then
-                echo -e "${YELLOW}已取消生成 Snell 配置${RESET}"
-            else
-                echo -e "${YELLOW}继续生成 Snell 配置，请确保安装支持 Snell 的 sing-box 版本${RESET}"
-            fi
-        fi
-        if [[ "$continue_snell" =~ ^[Yy]$ ]] || check_snell_supported; then
-            # 检查是否已有 Snell 版本设置
-            if [ -z "$snell_version" ]; then
-                snell_version=5
-            fi
-            # 获取 Snell 版本
-            read -p "请输入 Snell 版本 (5-6，可直接回车默认 5): " snell_version_input
-            if [ -n "$snell_version_input" ]; then
-                if [[ "$snell_version_input" == "5" ]] || [[ "$snell_version_input" == "6" ]]; then
-                    snell_version=$snell_version_input
-                else
-                    echo -e "${YELLOW}无效的 Snell 版本，使用默认版本 5${RESET}"
-                    snell_version=5
-                fi
-            fi
-            # 获取 Snell 端口
-            echo -e "${CYAN}=== 配置 Snell ===${RESET}"
-            snell_port=$(get_or_generate_port "Snell" "$snell_port")
-            # 确保 psk 长度满足 v6 要求 (12-255 字节)
-            if [ "$snell_version" == "6" ] && [ ${#snell_psk} -lt 12 ]; then
-                echo -e "${YELLOW}Snell v6 要求 psk 长度为 12-255 字节，重新生成 psk${RESET}"
-                snell_psk=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
-            fi
-            # 添加 Snell
-            local snell_config
-            snell_config=$(jq -n \
-                --arg port "$snell_port" \
-                --arg psk "$snell_psk" \
-                --argjson version "$snell_version" \
-                '{
-                    type: "snell",
-                    tag: "snell-in",
-                    listen: "0.0.0.0",
-                    listen_port: ($port | tonumber),
-                    version: $version,
-                    psk: $psk
-                }')
+    local i
+    for i in "${!PROTOCOL_LIST[@]}"; do
+        echo "$((i + 1)). $(proto_display "${PROTOCOL_LIST[$i]}")"
+    done
+    echo "${ALL_CHOICE}. 全部"
 
-            if [ -z "$snell_config" ] || [ "$snell_config" == "null" ]; then
-                echo -e "${RED}错误: Snell 配置生成失败${RESET}"
-                return 1
-            fi
-
-            new_inbounds=$(jq --argjson item "$snell_config" '. += [$item]' <<< "$new_inbounds")
-        fi
-    fi
-    if [[ "$choices" == *"8"* ]] || [[ "$choices" == *"2"* ]]; then
-        # 获取 Shadowsocks 端口
-        echo -e "${CYAN}=== 配置 Shadowsocks ===${RESET}"
-        shadowsocks_port=$(get_or_generate_port "Shadowsocks" "$shadowsocks_port")
-        # 添加 Shadowsocks
-        local shadowsocks_config
-        shadowsocks_config=$(jq -n \
-            --arg port "$shadowsocks_port" \
-            --arg ss_password "$ss_password" \
-            '{
-                type: "shadowsocks",
-                tag: "shadowsocks-in",
-                listen: "0.0.0.0",
-                listen_port: ($port | tonumber),
-                method: "2022-blake3-aes-256-gcm",
-                password: $ss_password,
-                multiplex: {enabled: true}
-            }')
-
-        if [ -z "$shadowsocks_config" ] || [ "$shadowsocks_config" == "null" ]; then
-            echo -e "${RED}错误: Shadowsocks 配置生成失败${RESET}"
-            return 1
-        fi
-
-        new_inbounds=$(jq --argjson item "$shadowsocks_config" '. += [$item]' <<< "$new_inbounds")
-    fi
-    if [[ "$choices" == *"8"* ]] || [[ "$choices" == *"3"* ]]; then
-        # 获取 VLESS 端口
-        echo -e "${CYAN}=== 配置 VLESS+Vision+Reality ===${RESET}"
-        vless_port=$(get_or_generate_port "VLESS" "$vless_port")
-        # 添加 VLESS+Reality
-        local vless_config
-        vless_config=$(jq -n \
-            --arg port "$vless_port" \
-            --arg uuid "$uuid" \
-            --arg private_key "$private_key" \
-            '{
-                type: "vless",
-                tag: "vless-in",
-                listen: "0.0.0.0",
-                listen_port: ($port | tonumber),
-                users: [{
-                    uuid: $uuid,
-                    flow: "xtls-rprx-vision"
-                }],
-                tls: {
-                    enabled: true,
-                    server_name: "www.tesla.com",
-                    reality: {
-                        enabled: true,
-                        handshake: {
-                            server: "www.tesla.com",
-                            server_port: 443
-                        },
-                        private_key: $private_key,
-                        short_id: ["123abc"]
-                    }
-                }
-            }')
-
-        if [ -z "$vless_config" ] || [ "$vless_config" == "null" ]; then
-            echo -e "${RED}错误: VLESS 配置生成失败${RESET}"
-            return 1
-        fi
-
-        new_inbounds=$(jq --argjson item "$vless_config" '. += [$item]' <<< "$new_inbounds")
-    fi
-    if [[ "$choices" == *"8"* ]] || [[ "$choices" == *"4"* ]]; then
-        # 获取 Hysteria2 端口
-        echo -e "${CYAN}=== 配置 Hysteria2 ===${RESET}"
-        hysteria_port=$(get_or_generate_port "Hysteria2" "$hysteria_port")
-        # 添加 Hysteria2
-        local hysteria_config
-        hysteria_config=$(jq -n \
-            --arg port "$hysteria_port" \
-            --arg password "$password" \
-            --arg cert_path "${CONFIG_DIR}/cert.pem" \
-            --arg key_path "${CONFIG_DIR}/private.key" \
-            '{
-                type: "hysteria2",
-                tag: "hysteria-in",
-                listen: "0.0.0.0",
-                listen_port: ($port | tonumber),
-                users: [{password: $password}],
-                masquerade: "https://bing.com",
-                tls: {
-                    enabled: true,
-                    alpn: ["h3"],
-                    certificate_path: $cert_path,
-                    key_path: $key_path
-                }
-            }')
-
-        if [ -z "$hysteria_config" ] || [ "$hysteria_config" == "null" ]; then
-            echo -e "${RED}错误: Hysteria2 配置生成失败${RESET}"
-            return 1
-        fi
-
-        new_inbounds=$(jq --argjson item "$hysteria_config" '. += [$item]' <<< "$new_inbounds")
-    fi
-    if [[ "$choices" == *"8"* ]] || [[ "$choices" == *"5"* ]]; then
-        # 获取 AnyTLS 端口
-        echo -e "${CYAN}=== 配置 AnyTLS ===${RESET}"
-        anytls_port=$(get_or_generate_port "AnyTLS" "$anytls_port")
-        # 添加 AnyTLS
-        local anytls_config
-        anytls_config=$(jq -n \
-            --arg port "$anytls_port" \
-            --arg uuid "$uuid" \
-            --arg public_key "$public_key" \
-            --arg cert_path "${CONFIG_DIR}/cert.pem" \
-            --arg key_path "${CONFIG_DIR}/private.key" \
-            '{
-                type: "anytls",
-                tag: "anytls-in",
-                listen: "0.0.0.0",
-                listen_port: ($port | tonumber),
-                users: [{
-                    name: $uuid,
-                    password: $public_key
-                }],
-                tls: {
-                    enabled: true,
-                    certificate_path: $cert_path,
-                    key_path: $key_path
-                }
-            }')
-
-        if [ -z "$anytls_config" ] || [ "$anytls_config" == "null" ]; then
-            echo -e "${RED}错误: AnyTLS 配置生成失败${RESET}"
-            return 1
-        fi
-
-        new_inbounds=$(jq --argjson item "$anytls_config" '. += [$item]' <<< "$new_inbounds")
-    fi
-    if [[ "$choices" == *"8"* ]] || [[ "$choices" == *"6"* ]]; then
-        # 获取 SOCKS5 端口
-        echo -e "${CYAN}=== 配置 SOCKS5 代理 ===${RESET}"
-        socks_port=$(get_or_generate_port "SOCKS5" "$socks_port")
-        # 添加 SOCKS5 配置
-        local socks_config
-        socks_config=$(jq -n \
-            --arg port "$socks_port" \
-            --arg username "$socks_username" \
-            --arg password "$socks_password" \
-            '{
-                type: "socks",
-                tag: "socks-in",
-                listen: "0.0.0.0",
-                listen_port: ($port | tonumber),
-                users: [{
-                    username: $username,
-                    password: $password
-                }]
-            }')
-        if [ -z "$socks_config" ] || [ "$socks_config" == "null" ]; then
-            echo -e "${RED}错误: SOCKS5 配置生成失败${RESET}"
-            return 1
-        fi
-        new_inbounds=$(jq --argjson item "$socks_config" '. += [$item]' <<< "$new_inbounds")
-    fi
-    if [[ "$choices" == *"8"* ]] || [[ "$choices" == *"7"* ]]; then
-        # 获取 HTTP 端口
-        echo -e "${CYAN}=== 配置 HTTP 代理 ===${RESET}"
-        http_port=$(get_or_generate_port "HTTP" "$http_port")
-        # 添加 HTTP 配置
-        local http_config
-        http_config=$(jq -n \
-            --arg port "$http_port" \
-            --arg username "$http_username" \
-            --arg password "$http_password" \
-            '{
-                type: "http",
-                tag: "http-in",
-                listen: "0.0.0.0",
-                listen_port: ($port | tonumber),
-                users: [{
-                    username: $username,
-                    password: $password
-                }]
-            }')
-        if [ -z "$http_config" ] || [ "$http_config" == "null" ]; then
-            echo -e "${RED}错误: HTTP 配置生成失败${RESET}"
-            return 1
-        fi
-        new_inbounds=$(jq --argjson item "$http_config" '. += [$item]' <<< "$new_inbounds")
-    fi
-
-    # 检查 inbounds 是否为空
-    if [ "$new_inbounds" == "[]" ]; then
-        echo -e "${RED}错误: 未选择任何协议配置！${RESET}"
-        return 1
-    fi
-    # 更新配置文件，添加 inbounds
-    local new_config
-    new_config=$(jq --argjson inbounds "$new_inbounds" '.inbounds = $inbounds' <<< "$current_config")
-    # 验证 jq 操作是否成功
-    if [ -z "$new_config" ] || [ "$new_config" == "null" ]; then
-        echo -e "${RED}错误: 配置生成失败，jq 操作返回空值！${RESET}"
-        return 1
-    fi
-    # 验证生成的配置是否为有效的 JSON
-    if ! echo "$new_config" | jq empty 2>/dev/null; then
-        echo -e "${RED}错误: 生成的配置不是有效的 JSON 格式！${RESET}"
-        return 1
-    fi
-    # 备份当前配置
-    cp "${CONFIG_FILE}" "${CONFIG_FILE}.backup" || {
-        echo -e "${RED}错误: 无法备份配置文件${RESET}"
-        return 1
-    }
-    # 保存新配置
-    echo "$new_config" > "${CONFIG_FILE}" || {
-        echo -e "${RED}错误: 无法写入配置文件${RESET}"
-        mv "${CONFIG_FILE}.backup" "${CONFIG_FILE}"
-        return 1
-    }
-    # 验证写入的文件是否为有效的 JSON
-    if ! jq empty "${CONFIG_FILE}" 2>/dev/null; then
-        echo -e "${RED}错误: 写入配置文件失败，正在恢复备份...${RESET}"
-        mv "${CONFIG_FILE}.backup" "${CONFIG_FILE}"
-        return 1
-    fi
-    # 删除备份文件
-    rm -f "${CONFIG_FILE}.backup"
-    echo -e "${GREEN}节点配置已生成并更新到 ${CONFIG_FILE}${RESET}"
-    # 重启服务
-    restart_sing_box
+    local choices
+    read -p "请输入选项编号 (1-${ALL_CHOICE}): " choices
+    append_inbounds "$choices"
 }
 
 # 检查 BBR 状态
@@ -791,11 +793,25 @@ check_bbr_status() {
     return 0  # BBR 已启用
 }
 
+# 设置 sysctl 配置（删除旧值并写入新值）
+set_sysctl() {
+    local key=$1 value=$2
+    sed -i "/^#${key}=/d; /^${key}=/d" /etc/sysctl.conf 2>/dev/null
+    echo "${key}=${value}" >> /etc/sysctl.conf
+}
+
+# 删除 sysctl 配置
+unset_sysctl() {
+    local key=$1
+    sed -i "/^#${key}=/d; /^${key}=/d" /etc/sysctl.conf 2>/dev/null
+}
+
 # 启用 BBR
 enable_bbr() {
     echo -e "${CYAN}正在启用 TCP BBR...${RESET}"
 
     # 检查内核版本
+    local kernel_version required_version
     kernel_version=$(uname -r | cut -d. -f1-2)
     required_version="4.9"
 
@@ -813,23 +829,8 @@ enable_bbr() {
     fi
 
     # 配置系统参数
-    # 确保配置存在且未被注释
-    local bbr_configs=(
-        "net.core.default_qdisc=fq"
-        "net.ipv4.tcp_congestion_control=bbr"
-    )
-
-    for config in "${bbr_configs[@]}"; do
-        local key=$(echo "$config" | cut -d= -f1)
-        local value=$(echo "$config" | cut -d= -f2)
-
-        # 删除可能存在的注释行
-        sed -i "/^#${key}=/d" /etc/sysctl.conf 2>/dev/null
-        sed -i "/^${key}=/d" /etc/sysctl.conf 2>/dev/null
-
-        # 添加配置
-        echo "$config" >> /etc/sysctl.conf
-    done
+    set_sysctl "net.core.default_qdisc" "fq"
+    set_sysctl "net.ipv4.tcp_congestion_control" "bbr"
 
     # 应用配置
     sysctl -p > /dev/null 2>&1
@@ -851,25 +852,9 @@ enable_bbr() {
 disable_bbr() {
     echo -e "${CYAN}正在关闭 TCP BBR...${RESET}"
 
-    # 删除 BBR 相关配置
-    local bbr_configs=(
-        "net.core.default_qdisc=fq"
-        "net.ipv4.tcp_congestion_control=bbr"
-    )
-
-    for config in "${bbr_configs[@]}"; do
-        local key=$(echo "$config" | cut -d= -f1)
-        # 删除配置行（包括注释行）
-        sed -i "/^#${key}=/d" /etc/sysctl.conf 2>/dev/null
-        sed -i "/^${key}=/d" /etc/sysctl.conf 2>/dev/null
-    done
-
-    # 设置为默认的拥塞控制算法（cubic）
-    # 先删除可能存在的 cubic 配置
-    sed -i "/^#net.ipv4.tcp_congestion_control=cubic$/d" /etc/sysctl.conf 2>/dev/null
-    sed -i "/^net.ipv4.tcp_congestion_control=cubic$/d" /etc/sysctl.conf 2>/dev/null
-    # 添加 cubic 配置
-    echo "net.ipv4.tcp_congestion_control=cubic" >> /etc/sysctl.conf
+    # 删除 BBR 相关配置，恢复默认拥塞控制算法
+    unset_sysctl "net.core.default_qdisc"
+    set_sysctl "net.ipv4.tcp_congestion_control" "cubic"
 
     # 应用配置
     sysctl -p > /dev/null 2>&1
@@ -905,6 +890,74 @@ show_config_source_info() {
     echo ""
 }
 
+# 生成新的随机协议参数（初次安装或无默认值时使用）
+init_protocol_params() {
+    ensure_command ss iproute2 iproute
+
+    # 随机端口
+    vless_port=$(generate_unused_port)
+    hysteria_port=$(generate_unused_port)
+    anytls_port=$(generate_unused_port)
+    shadowsocks_port=$(generate_unused_port)
+    snell_port=$(generate_unused_port)
+    socks_port=$(generate_unused_port)
+    http_port=$(generate_unused_port)
+
+    # 随机密码/密钥
+    ss_password=$(sing-box generate rand 32 --base64 2>/dev/null || rand_alnum 32)
+    password=$(rand_alnum 12)
+    snell_psk=$(rand_alnum 32)
+    socks_username=$(rand_alpha 8)
+    socks_password=$(rand_alnum 12)
+    http_username=$(rand_alpha 8)
+    http_password=$(rand_alnum 12)
+
+    # UUID 和 Reality 密钥对
+    uuid=$(sing-box generate uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
+    reality_output=$(sing-box generate reality-keypair 2>/dev/null)
+    if [ -n "$reality_output" ]; then
+        private_key=$(echo "${reality_output}" | sed -n 's/.*PrivateKey: *//p' | awk '{print $1}')
+        public_key=$(echo "${reality_output}" | sed -n 's/.*PublicKey: *//p' | awk '{print $1}')
+    else
+        # 如果 sing-box 命令不可用，生成随机字符串
+        private_key=$(rand_alnum 32)
+        public_key=$(rand_alnum 32)
+    fi
+
+    snell_version=5
+}
+
+# 与默认值比较，由 parse_config_from_json 在提取后调用：
+# 若某协议参数未提取到（配置中无此协议），则填充默认值
+ensure_protocol_defaults() {
+    [ -z "$vless_port" ] && vless_port=$(generate_unused_port)
+    [ -z "$hysteria_port" ] && hysteria_port=$(generate_unused_port)
+    [ -z "$anytls_port" ] && anytls_port=$(generate_unused_port)
+    [ -z "$shadowsocks_port" ] && shadowsocks_port=$(generate_unused_port)
+    [ -z "$ss_password" ] && ss_password=$(sing-box generate rand 32 --base64 2>/dev/null || rand_alnum 32)
+    [ -z "$password" ] && password=$(rand_alnum 12)
+    [ -z "$uuid" ] && uuid=$(sing-box generate uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
+    if [ -z "$private_key" ] || [ -z "$public_key" ]; then
+        reality_output=$(sing-box generate reality-keypair 2>/dev/null)
+        if [ -n "$reality_output" ]; then
+            private_key=$(echo "${reality_output}" | sed -n 's/.*PrivateKey: *//p' | awk '{print $1}')
+            public_key=$(echo "${reality_output}" | sed -n 's/.*PublicKey: *//p' | awk '{print $1}')
+        else
+            private_key=$(rand_alnum 32)
+            public_key=$(rand_alnum 32)
+        fi
+    fi
+    [ -z "$socks_port" ] && socks_port=$(generate_unused_port)
+    [ -z "$http_port" ] && http_port=$(generate_unused_port)
+    [ -z "$socks_username" ] && socks_username=$(rand_alpha 8)
+    [ -z "$socks_password" ] && socks_password=$(rand_alnum 12)
+    [ -z "$http_username" ] && http_username=$(rand_alpha 8)
+    [ -z "$http_password" ] && http_password=$(rand_alnum 12)
+    [ -z "$snell_port" ] && snell_port=$(generate_unused_port)
+    [ -z "$snell_psk" ] && snell_psk=$(rand_alnum 32)
+    [ -z "$snell_version" ] && snell_version=5
+}
+
 # 从 config.json 解析配置信息
 parse_config_from_json() {
     if [ ! -f "${CONFIG_FILE}" ]; then
@@ -917,111 +970,19 @@ parse_config_from_json() {
     ip_country=$(curl -s http://ipinfo.io/${host_ip}/country)
 
     # 检查是否有 inbounds 配置
-    local inbounds_count=$(jq '.inbounds | length' "${CONFIG_FILE}" 2>/dev/null)
+    local inbounds_count
+    inbounds_count=$(jq '.inbounds | length' "${CONFIG_FILE}" 2>/dev/null)
     if [ -z "$inbounds_count" ] || [ "$inbounds_count" -eq 0 ]; then
         # 初次安装时没有 inbounds，这是正常情况
-        # 生成新的随机参数用于节点配置
         echo -e "${YELLOW}初次安装检测：生成新的随机参数用于节点配置${RESET}"
-
-        # 生成随机端口和密码
-        check_ss_command
-        vless_port=$(generate_unused_port)
-        hysteria_port=$(generate_unused_port)
-        anytls_port=$(generate_unused_port)
-        shadowsocks_port=$(generate_unused_port)
-        snell_port=$(generate_unused_port)
-        snell_psk=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
-        ss_password=$(sing-box generate rand 32 --base64 2>/dev/null || tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
-        password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
-        socks_port=$(generate_unused_port)
-        http_port=$(generate_unused_port)
-        socks_username=$(tr -dc a-z </dev/urandom | head -c 8)
-        socks_password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
-        http_username=$(tr -dc a-z </dev/urandom | head -c 8)
-        http_password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
-
-        # 生成 UUID 和 Reality 密钥对
-        uuid=$(sing-box generate uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
-        reality_output=$(sing-box generate reality-keypair 2>/dev/null)
-        if [ -n "$reality_output" ]; then
-            private_key=$(echo "${reality_output}" | grep -oP 'PrivateKey:\s*\K.*')
-            public_key=$(echo "${reality_output}" | grep -oP 'PublicKey:\s*\K.*')
-        else
-            # 如果 sing-box 命令不可用，生成随机字符串
-            private_key=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
-            public_key=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
-        fi
-
-        return 0
+        init_protocol_params
     else
-        # 从现有配置中提取参数
-        extract_protocol_from_config "hysteria2"
-        extract_protocol_from_config "shadowsocks"
-        extract_protocol_from_config "vless"
-        extract_protocol_from_config "anytls"
-        extract_protocol_from_config "socks"
-        extract_protocol_from_config "http"
-        extract_protocol_from_config "snell"
-
-        # 如果某些参数未设置，使用默认值
-        if [ -z "$vless_port" ]; then
-            vless_port=$(generate_unused_port)
-        fi
-        if [ -z "$hysteria_port" ]; then
-            hysteria_port=$(generate_unused_port)
-        fi
-        if [ -z "$anytls_port" ]; then
-            anytls_port=$(generate_unused_port)
-        fi
-        if [ -z "$shadowsocks_port" ]; then
-            shadowsocks_port=$(generate_unused_port)
-        fi
-        if [ -z "$ss_password" ]; then
-            ss_password=$(sing-box generate rand 32 --base64 2>/dev/null || tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
-        fi
-        if [ -z "$password" ]; then
-            password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
-        fi
-        if [ -z "$uuid" ]; then
-            uuid=$(sing-box generate uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
-        fi
-        if [ -z "$private_key" ] || [ -z "$public_key" ]; then
-            reality_output=$(sing-box generate reality-keypair 2>/dev/null)
-            if [ -n "$reality_output" ]; then
-                private_key=$(echo "${reality_output}" | grep -oP 'PrivateKey:\s*\K.*')
-                public_key=$(echo "${reality_output}" | grep -oP 'PublicKey:\s*\K.*')
-            else
-                private_key=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
-                public_key=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
-            fi
-        fi
-        if [ -z "$socks_port" ]; then
-            socks_port=$(generate_unused_port)
-        fi
-        if [ -z "$http_port" ]; then
-            http_port=$(generate_unused_port)
-        fi
-        if [ -z "$socks_username" ]; then
-            socks_username=$(tr -dc a-z </dev/urandom | head -c 8)
-        fi
-        if [ -z "$socks_password" ]; then
-            socks_password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
-        fi
-        if [ -z "$http_username" ]; then
-            http_username=$(tr -dc a-z </dev/urandom | head -c 8)
-        fi
-        if [ -z "$http_password" ]; then
-            http_password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
-        fi
-        if [ -z "$snell_port" ]; then
-            snell_port=$(generate_unused_port)
-        fi
-        if [ -z "$snell_psk" ]; then
-            snell_psk=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
-        fi
-        if [ -z "$snell_version" ]; then
-            snell_version=5
-        fi
+        # 从现有配置中提取参数，未提取到的填充默认值
+        local type
+        for type in "${PROTOCOL_LIST[@]}"; do
+            extract_protocol_from_config "$type"
+        done
+        ensure_protocol_defaults
     fi
 
     return 0
@@ -1030,88 +991,39 @@ parse_config_from_json() {
 # 从 config.json 提取协议配置
 extract_protocol_from_config() {
     local protocol_type=$1
-    local config_data=""
+    local config_data
+    # 单次 jq 提取该协议通用字段（不存在则输出 null）
+    config_data=$(jq -c --arg type "$protocol_type" '
+        .inbounds[]? | select(.type == $type) |
+        {
+            port: .listen_port,
+            password: (.users[0].password // .password),
+            username: .users[0].username,
+            uuid: .users[0].uuid,
+            psk: .psk,
+            version: .version
+        }' "${CONFIG_FILE}" 2>/dev/null | head -1)
+    [ -z "$config_data" ] || [ "$config_data" == "null" ] && return 1
+
+    local port pass user id psk ver
+    port=$(echo "$config_data" | jq -r '.port // empty')
+    pass=$(echo "$config_data" | jq -r '.password // empty')
+    user=$(echo "$config_data" | jq -r '.username // empty')
+    id=$(echo "$config_data" | jq -r '.uuid // empty')
+    psk=$(echo "$config_data" | jq -r '.psk // empty')
+    ver=$(echo "$config_data" | jq -r '.version // empty')
 
     case $protocol_type in
-        hysteria2)
-            config_data=$(jq -r '.inbounds[] | select(.type == "hysteria2") | {port: .listen_port, password: .users[0].password}' "${CONFIG_FILE}" 2>/dev/null)
-            if [ -n "$config_data" ] && [ "$config_data" != "null" ]; then
-                local port=$(echo "$config_data" | jq -r '.port')
-                local pass=$(echo "$config_data" | jq -r '.password')
-                [ -n "$port" ] && [ "$port" != "null" ] && hysteria_port=$port
-                [ -n "$pass" ] && [ "$pass" != "null" ] && password=$pass
-                return 0
-            fi
-            ;;
-        shadowsocks)
-            # 从 shadowsocks 中提取端口和密码
-            local ss_data=$(jq -r '.inbounds[] | select(.type == "shadowsocks") | {port: .listen_port, password: .password}' "${CONFIG_FILE}" 2>/dev/null)
-            if [ -n "$ss_data" ] && [ "$ss_data" != "null" ]; then
-                local port=$(echo "$ss_data" | jq -r '.port')
-                local ss_pass=$(echo "$ss_data" | jq -r '.password')
-                [ -n "$port" ] && [ "$port" != "null" ] && shadowsocks_port=$port
-                [ -n "$ss_pass" ] && [ "$ss_pass" != "null" ] && ss_password=$ss_pass
-                return 0
-            fi
-            ;;
-        vless)
-            config_data=$(jq -r '.inbounds[] | select(.type == "vless") | {port: .listen_port, uuid: .users[0].uuid}' "${CONFIG_FILE}" 2>/dev/null)
-            if [ -n "$config_data" ] && [ "$config_data" != "null" ]; then
-                local port=$(echo "$config_data" | jq -r '.port')
-                local id=$(echo "$config_data" | jq -r '.uuid')
-                [ -n "$port" ] && [ "$port" != "null" ] && vless_port=$port
-                [ -n "$id" ] && [ "$id" != "null" ] && uuid=$id
-                return 0
-            fi
-            ;;
-        anytls)
-            config_data=$(jq -r '.inbounds[] | select(.type == "anytls") | {port: .listen_port}' "${CONFIG_FILE}" 2>/dev/null)
-            if [ -n "$config_data" ] && [ "$config_data" != "null" ]; then
-                local port=$(echo "$config_data" | jq -r '.port')
-                [ -n "$port" ] && [ "$port" != "null" ] && anytls_port=$port
-                return 0
-            fi
-            ;;
-        socks)
-            config_data=$(jq -r '.inbounds[] | select(.type == "socks") | {port: .listen_port, username: .users[0].username, password: .users[0].password}' "${CONFIG_FILE}" 2>/dev/null)
-            if [ -n "$config_data" ] && [ "$config_data" != "null" ]; then
-                local port=$(echo "$config_data" | jq -r '.port')
-                local user=$(echo "$config_data" | jq -r '.username')
-                local pass=$(echo "$config_data" | jq -r '.password')
-                [ -n "$port" ] && [ "$port" != "null" ] && socks_port=$port
-                [ -n "$user" ] && [ "$user" != "null" ] && socks_username=$user
-                [ -n "$pass" ] && [ "$pass" != "null" ] && socks_password=$pass
-                return 0
-            fi
-            ;;
-        http)
-            config_data=$(jq -r '.inbounds[] | select(.type == "http") | {port: .listen_port, username: .users[0].username, password: .users[0].password}' "${CONFIG_FILE}" 2>/dev/null)
-            if [ -n "$config_data" ] && [ "$config_data" != "null" ]; then
-                local port=$(echo "$config_data" | jq -r '.port')
-                local user=$(echo "$config_data" | jq -r '.username')
-                local pass=$(echo "$config_data" | jq -r '.password')
-                [ -n "$port" ] && [ "$port" != "null" ] && http_port=$port
-                [ -n "$user" ] && [ "$user" != "null" ] && http_username=$user
-                [ -n "$pass" ] && [ "$pass" != "null" ] && http_password=$pass
-                return 0
-            fi
-            ;;
-        snell)
-            config_data=$(jq -r '.inbounds[] | select(.type == "snell") | {port: .listen_port, psk: .psk, version: .version}' "${CONFIG_FILE}" 2>/dev/null)
-            if [ -n "$config_data" ] && [ "$config_data" != "null" ]; then
-                local port=$(echo "$config_data" | jq -r '.port')
-                local psk=$(echo "$config_data" | jq -r '.psk')
-                local ver=$(echo "$config_data" | jq -r '.version')
-                [ -n "$port" ] && [ "$port" != "null" ] && snell_port=$port
-                [ -n "$psk" ] && [ "$psk" != "null" ] && snell_psk=$psk
-                [ -n "$ver" ] && [ "$ver" != "null" ] && snell_version=$ver
-                return 0
-            fi
-            ;;
-
+        hysteria2) hysteria_port=$port; password=$pass;;
+        shadowsocks) shadowsocks_port=$port; ss_password=$pass;;
+        vless) vless_port=$port; uuid=$id;;
+        anytls) anytls_port=$port;;
+        socks) socks_port=$port; socks_username=$user; socks_password=$pass;;
+        http) http_port=$port; http_username=$user; http_password=$pass;;
+        snell) snell_port=$port; snell_psk=$psk; snell_version=$ver;;
+        *) return 1;;
     esac
-
-    return 1
+    return 0
 }
 
 # URL 编码函数
@@ -1153,40 +1065,15 @@ generate_client_config() {
             continue
         fi
 
-        case $protocol in
-            hysteria2)
-                local uri="hy2://${password}@${host_ip}:${hysteria_port}?insecure=1&&alpn=h3&sni=www.bing.com#${ip_country}-hy"
-                echo -e "==== Hysteria2 ====\n${uri}\n"
-                ;;
-            shadowsocks)
-                echo -e ""
-                # 编码密码
-                local encoded_password=$(urlencode "$ss_password")
-                local uri="ss://2022-blake3-aes-256-gcm:${encoded_password}@${host_ip}:${shadowsocks_port}#${ip_country}-ss"
-                echo -e "==== Shadowsocks ====\n${uri}\n"
-                ;;
-            vless)
-                local uri="vless://${uuid}@${host_ip}:${vless_port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.tesla.com&fp=chrome&pbk=${public_key}&sid=123abc&type=tcp&headerType=none#${ip_country}-vless"
-                echo -e "==== VLESS ====\n${uri}\n"
-                ;;
-            anytls)
-                local uri="anytls://${public_key}@${host_ip}:${anytls_port}/?sni=www.bing.com&insecure=1&alpn=h2,http/1.1#${ip_country}-anytls"
-                echo -e "==== AnyTLS ====\n${uri}\n"
-                ;;
-            socks)
-                local uri="socks5://${socks_username}:${socks_password}@${host_ip}:${socks_port}#${ip_country}-socks5"
-                echo -e "==== SOCKS5 代理 ====\n${uri}\n"
-                ;;
-            http)
-                local uri="http://${http_username}:${http_password}@${host_ip}:${http_port}#${ip_country}-http"
-                echo -e "==== HTTP 代理 ====\n${uri}\n"
-                ;;
-            snell)
-                local uri="snell://${snell_psk}@${host_ip}:${snell_port}?version=${snell_version:-5}#${ip_country}-snell"
-                echo -e "==== Snell ====\n${uri}\n"
-                echo -e "Surge/Clash 格式:\n${ip_country}-snell = snell, ${host_ip}, ${snell_port}, psk = ${snell_psk}, version = ${snell_version:-5}\n"
-                ;;
-        esac
+        local uri
+        if ! uri=$(build_client_uri "$protocol"); then
+            echo -e "${RED}错误: ${protocol} URI 生成失败${RESET}"
+            continue
+        fi
+        echo -e "==== $(proto_display "$protocol") ====\n${uri}\n"
+        if [ "$protocol" == "snell" ]; then
+            echo -e "Surge/Clash 格式:\n${ip_country}-snell = snell, ${host_ip}, ${snell_port}, psk = ${snell_psk}, version = ${snell_version:-5}\n"
+        fi
     done
 }
 
@@ -1210,48 +1097,13 @@ check_sing_box() {
     # 获取配置文件中实际存在的协议
     local available_protocols=()
     local protocol_names=()
-
-    # 检查 Hysteria2
-    if jq -e '.inbounds[] | select(.type == "hysteria2")' "${CONFIG_FILE}" &>/dev/null; then
-        available_protocols+=("hysteria2")
-        protocol_names+=("Hysteria2")
-    fi
-
-    # 检查 VLESS
-    if jq -e '.inbounds[] | select(.type == "vless")' "${CONFIG_FILE}" &>/dev/null; then
-        available_protocols+=("vless")
-        protocol_names+=("VLESS+Vision+Reality")
-    fi
-
-    # 检查 AnyTLS
-    if jq -e '.inbounds[] | select(.type == "anytls")' "${CONFIG_FILE}" &>/dev/null; then
-        available_protocols+=("anytls")
-        protocol_names+=("AnyTLS")
-    fi
-
-    # 检查 Shadowsocks
-    if jq -e '.inbounds[] | select(.type == "shadowsocks")' "${CONFIG_FILE}" &>/dev/null; then
-        available_protocols+=("shadowsocks")
-        protocol_names+=("Shadowsocks")
-    fi
-
-    # 检查 SOCKS5 代理
-    if jq -e '.inbounds[] | select(.type == "socks")' "${CONFIG_FILE}" &>/dev/null; then
-        available_protocols+=("socks")
-        protocol_names+=("SOCKS5 代理")
-    fi
-
-    # 检查 HTTP 代理
-    if jq -e '.inbounds[] | select(.type == "http")' "${CONFIG_FILE}" &>/dev/null; then
-        available_protocols+=("http")
-        protocol_names+=("HTTP 代理")
-    fi
-
-    # 检查 Snell
-    if jq -e '.inbounds[] | select(.type == "snell")' "${CONFIG_FILE}" &>/dev/null; then
-        available_protocols+=("snell")
-        protocol_names+=("Snell")
-    fi
+    local type
+    for type in "${PROTOCOL_LIST[@]}"; do
+        if jq -e --arg type "$type" '.inbounds[] | select(.type == $type)' "${CONFIG_FILE}" &>/dev/null; then
+            available_protocols+=("$type")
+            protocol_names+=("$(proto_display "$type")")
+        fi
+    done
 
     # 如果没有找到任何协议
     if [ ${#available_protocols[@]} -eq 0 ]; then
@@ -1260,23 +1112,26 @@ check_sing_box() {
     fi
 
     # 显示可用的协议选项
+    local all_choice=$(( ${#available_protocols[@]} + 1 ))
     echo -e "${CYAN}检测到以下协议配置，请选择要查看的协议（可多选，用空格分隔）:${RESET}"
+    local i
     for i in "${!protocol_names[@]}"; do
         echo "$((i+1)). ${protocol_names[$i]}"
     done
-    echo "$((${#protocol_names[@]}+1)). 全部"
+    echo "${all_choice}. 全部"
 
+    local choices
     read -p "请输入选项编号: " choices
 
     local selected_protocols=()
 
     # 如果选择全部
-    if [[ "$choices" == *"$((${#protocol_names[@]}+1))"* ]]; then
+    if choice_has "$all_choice" "$choices"; then
         selected_protocols=("${available_protocols[@]}")
     else
         # 根据选择添加协议
         for i in "${!available_protocols[@]}"; do
-            if [[ "$choices" == *"$((i+1))"* ]]; then
+            if choice_has "$((i+1))" "$choices"; then
                 selected_protocols+=("${available_protocols[$i]}")
             fi
         done
@@ -1301,8 +1156,8 @@ add_direct_config() {
     fi
 
     # 检查必要的命令
-    check_ss_command
-    check_jq_command
+    ensure_command ss iproute2 iproute
+    ensure_command jq jq
 
     # 输入本地端口
     while true; do
@@ -1354,44 +1209,20 @@ add_direct_config() {
         }')
 
     # 读取当前配置
-    local current_config=$(cat "${CONFIG_FILE}")
+    local current_config
+    current_config=$(cat "${CONFIG_FILE}")
+    # 确保 inbounds 字段存在，添加新的 Direct 配置到 inbounds
+    current_config=$(echo "$current_config" | jq '.inbounds = (.inbounds // [])')
+    current_config=$(echo "$current_config" | jq --argjson item "$direct_config" '.inbounds += [$item]')
 
-    # 检查是否已存在 inbounds
-    if ! echo "$current_config" | jq -e '.inbounds' &>/dev/null; then
-        # 如果不存在 inbounds，创建一个空数组
-        current_config=$(echo "$current_config" | jq '.inbounds = []')
-    fi
-
-    # 添加新的 Direct 配置到 inbounds
-    local new_config=$(echo "$current_config" | jq --argjson item "$direct_config" '.inbounds += [$item]')
-
-    # 验证 jq 操作是否成功
-    if [ -z "$new_config" ] || [ "$new_config" == "null" ]; then
+    if [ -z "$current_config" ] || [ "$current_config" == "null" ]; then
         echo -e "${RED}错误: 配置生成失败，jq 操作返回空值！${RESET}"
         return 1
     fi
 
-    # 验证生成的配置是否为有效的 JSON
-    if ! echo "$new_config" | jq empty 2>/dev/null; then
-        echo -e "${RED}错误: 生成的配置不是有效的 JSON 格式！${RESET}"
+    if ! save_config "$current_config"; then
         return 1
     fi
-
-    # 备份当前配置
-    cp "${CONFIG_FILE}" "${CONFIG_FILE}.backup"
-
-    # 保存新配置
-    echo "$new_config" > "${CONFIG_FILE}"
-
-    # 验证写入的文件是否为有效的 JSON
-    if ! jq empty "${CONFIG_FILE}" 2>/dev/null; then
-        echo -e "${RED}错误: 写入配置文件失败，正在恢复备份...${RESET}"
-        mv "${CONFIG_FILE}.backup" "${CONFIG_FILE}"
-        return 1
-    fi
-
-    # 删除备份文件
-    rm -f "${CONFIG_FILE}.backup"
 
     # 保存到 Direct 配置文件（用于查看）
     echo "${local_port} ${remote_ip} ${remote_port}" >> "${DIRECT_CONFIG_FILE}"
@@ -1444,7 +1275,7 @@ delete_direct_config() {
     echo -e "${CYAN}=== 删除中转配置 ===${RESET}\n"
 
     # 检查 jq 命令
-    check_jq_command
+    ensure_command jq jq
 
     # 获取中转配置列表
     local direct_configs=$(get_direct_config_list)
@@ -1497,10 +1328,7 @@ delete_direct_config() {
                 echo -e "${CYAN}${config_array[$((sel-1))]}${RESET}"
             done
 
-            read -p "$(echo -e "${RED}确定要删除以上配置吗? (y/N) ${RESET}")" confirm
-            confirm=${confirm:-N}
-
-            if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            if ! confirm_prompt "删除以上配置"; then
                 echo -e "${YELLOW}已取消删除操作${RESET}"
                 return 0
             fi
@@ -1526,10 +1354,7 @@ delete_direct_config() {
             ;;
         2)
             # 删除全部
-            read -p "$(echo -e "${RED}确定要删除所有中转配置吗? (y/N) ${RESET}")" confirm
-            confirm=${confirm:-N}
-
-            if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            if ! confirm_prompt "删除所有中转配置"; then
                 echo -e "${YELLOW}已取消删除操作${RESET}"
                 return 0
             fi
@@ -1563,27 +1388,9 @@ delete_direct_config() {
         return 1
     fi
 
-    # 验证生成的配置是否为有效的 JSON
-    if ! echo "$current_config" | jq empty 2>/dev/null; then
-        echo -e "${RED}错误: 生成的配置不是有效的 JSON 格式！${RESET}"
+    if ! save_config "$current_config"; then
         return 1
     fi
-
-    # 备份当前配置
-    cp "${CONFIG_FILE}" "${CONFIG_FILE}.backup"
-
-    # 保存新配置
-    echo "$current_config" > "${CONFIG_FILE}"
-
-    # 验证写入的文件是否为有效的 JSON
-    if ! jq empty "${CONFIG_FILE}" 2>/dev/null; then
-        echo -e "${RED}错误: 写入配置文件失败，正在恢复备份...${RESET}"
-        mv "${CONFIG_FILE}.backup" "${CONFIG_FILE}"
-        return 1
-    fi
-
-    # 删除备份文件
-    rm -f "${CONFIG_FILE}.backup"
 
     echo -e "${GREEN}中转配置删除成功！${RESET}"
 
@@ -1610,45 +1417,23 @@ delete_node_config() {
     fi
 
     # 获取所有节点类型的配置（排除 direct 类型）
-    local node_types=("hysteria2" "vless" "anytls" "shadowsocks" "socks" "http" "snell")
     local available_nodes=()
     local node_display_names=()
     local node_info=()
+    local node_type
 
-    # 检查每种协议类型
-    for node_type in "${node_types[@]}"; do
+    # 按协议注册表顺序检查每种协议类型
+    for node_type in "${PROTOCOL_LIST[@]}"; do
         # 获取该类型的所有节点
-        local nodes=$(jq -r --arg type "$node_type" '.inbounds[]? | select(.type == $type) | "\(.type)|\(.listen_port)|\(.tag // "unknown")"' "${CONFIG_FILE}" 2>/dev/null)
+        local nodes
+        nodes=$(jq -r --arg type "$node_type" '.inbounds[]? | select(.type == $type) | "\(.type)|\(.listen_port)|\(.tag // "unknown")"' "${CONFIG_FILE}" 2>/dev/null)
 
         if [ -n "$nodes" ]; then
+            local type port tag
             while IFS='|' read -r type port tag; do
                 available_nodes+=("$type")
                 node_info+=("$type|$port|$tag")
-
-                # 生成显示名称
-                case $type in
-                    hysteria2)
-                        node_display_names+=("Hysteria2 (端口: $port)")
-                        ;;
-                    vless)
-                        node_display_names+=("VLESS+Vision+Reality (端口: $port)")
-                        ;;
-                    anytls)
-                        node_display_names+=("AnyTLS (端口: $port)")
-                        ;;
-                    shadowsocks)
-                        node_display_names+=("Shadowsocks (端口: $port)")
-                        ;;
-                    socks)
-                        node_display_names+=("SOCKS5 代理 (端口: $port)")
-                        ;;
-                    http)
-                        node_display_names+=("HTTP 代理 (端口: $port)")
-                        ;;
-                    snell)
-                        node_display_names+=("Snell (端口: $port)")
-                        ;;
-                esac
+                node_display_names+=("$(proto_display "$type") (端口: $port)")
             done <<< "$nodes"
         fi
     done
@@ -1678,12 +1463,10 @@ delete_node_config() {
     local nodes_to_delete=()
 
     # 如果选择删除全部
-    if [[ "$choices" == *"$((${#node_display_names[@]}+1))"* ]]; then
+    local all_choice=$(( ${#node_display_names[@]} + 1 ))
+    if choice_has "$all_choice" "$choices"; then
         # 确认删除全部
-        read -p "$(echo -e "${RED}确定要删除所有节点配置吗? 这将保留最小配置。(y/N) ${RESET}")" confirm
-        confirm=${confirm:-N}
-
-        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        if ! confirm_prompt "删除所有节点配置（将保留最小配置）"; then
             echo -e "${YELLOW}已取消删除操作${RESET}"
             return 0
         fi
@@ -1691,8 +1474,9 @@ delete_node_config() {
         nodes_to_delete=("${node_info[@]}")
     else
         # 根据选择添加要删除的节点
+        local i
         for i in "${!available_nodes[@]}"; do
-            if [[ "$choices" == *"$((i+1))"* ]]; then
+            if choice_has "$((i+1))" "$choices"; then
                 nodes_to_delete+=("${node_info[$i]}")
             fi
         done
@@ -1704,9 +1488,11 @@ delete_node_config() {
     fi
 
     # 读取当前配置
-    local current_config=$(cat "${CONFIG_FILE}")
+    local current_config
+    current_config=$(cat "${CONFIG_FILE}")
 
     # 删除选中的节点
+    local node type port tag
     for node in "${nodes_to_delete[@]}"; do
         IFS='|' read -r type port tag <<< "$node"
 
@@ -1717,8 +1503,9 @@ delete_node_config() {
         echo -e "${GREEN}已删除: $type (端口: $port)${RESET}"
     done
 
-    # 保存新配置
-    echo "$current_config" > "${CONFIG_FILE}"
+    if ! save_config "$current_config"; then
+        return 1
+    fi
 
     echo -e "${GREEN}节点配置删除成功！${RESET}"
 
@@ -1794,6 +1581,15 @@ trap 'echo -e "${RED}已取消操作${RESET}"; exit' INT
 # 主循环
 check_root
 
+# 检查 sing-box 是否已安装，未安装则提示并返回失败
+require_sing_box() {
+    if [ ${sing_box_installed} -eq 0 ]; then
+        return 0
+    fi
+    echo -e "${RED}sing-box 尚未安装！${RESET}"
+    return 1
+}
+
 while true; do
     show_menu
     case "${choice}" in
@@ -1805,96 +1601,43 @@ while true; do
             fi
             ;;
         2)
-            if [ ${sing_box_installed} -eq 0 ]; then
-                uninstall_sing_box
-            else
-                echo -e "${YELLOW}sing-box 尚未安装！${RESET}"
-            fi
+            require_sing_box && uninstall_sing_box
             ;;
         3)
-            if [ ${sing_box_installed} -eq 0 ]; then
+            if require_sing_box; then
                 if [ ${sing_box_running} -eq 0 ]; then
                     stop_sing_box
                 else
                     start_sing_box
                 fi
-            else
-                echo -e "${RED}sing-box 尚未安装！${RESET}"
             fi
             ;;
-        4)
-            if [ ${sing_box_installed} -eq 0 ]; then
-                restart_sing_box
-            else
-                echo -e "${RED}sing-box 尚未安装！${RESET}"
-            fi
+        4)  require_sing_box && restart_sing_box
             ;;
-        5)
-            if [ ${sing_box_installed} -eq 0 ]; then
-                status_sing_box
-            else
-                echo -e "${RED}sing-box 尚未安装！${RESET}"
-            fi
+        5)  require_sing_box && status_sing_box
             ;;
-        6)
-            if [ ${sing_box_installed} -eq 0 ]; then
-                log_sing_box
-            else
-                echo -e "${RED}sing-box 尚未安装！${RESET}"
-            fi
+        6)  require_sing_box && log_sing_box
             ;;
-        7)
-            if [ ${sing_box_installed} -eq 0 ]; then
-                generate_node_config
-            else
-                echo -e "${RED}sing-box 尚未安装！${RESET}"
-            fi
+        7)  require_sing_box && generate_node_config
             ;;
-        8)
-            if [ ${sing_box_installed} -eq 0 ]; then
-                check_sing_box
-            else
-                echo -e "${RED}sing-box 尚未安装！${RESET}"
-            fi
+        8)  require_sing_box && check_sing_box
             ;;
-        9)
-            if [ ${sing_box_installed} -eq 0 ]; then
-                delete_node_config
-            else
-                echo -e "${RED}sing-box 尚未安装！${RESET}"
-            fi
+        9)  require_sing_box && delete_node_config
             ;;
-        10)
-            if [ ${sing_box_installed} -eq 0 ]; then
-                add_direct_config
-            else
-                echo -e "${RED}sing-box 尚未安装！${RESET}"
-            fi
+        10) require_sing_box && add_direct_config
             ;;
-        11)
-            if [ ${sing_box_installed} -eq 0 ]; then
-                view_direct_config
-            else
-                echo -e "${RED}sing-box 尚未安装！${RESET}"
-            fi
+        11) require_sing_box && view_direct_config
             ;;
-        12)
-            if [ ${sing_box_installed} -eq 0 ]; then
-                delete_direct_config
-            else
-                echo -e "${RED}sing-box 尚未安装！${RESET}"
-            fi
+        12) require_sing_box && delete_direct_config
             ;;
         13)
-            check_bbr_status
-            if [ $? -eq 0 ]; then
+            if check_bbr_status; then
                 disable_bbr
             else
                 enable_bbr
             fi
             ;;
-        14)
-            show_config_source_info
+        14) show_config_source_info
             ;;
         0)
             echo -e "${GREEN}已退出 sing-box 管理工具${RESET}"
