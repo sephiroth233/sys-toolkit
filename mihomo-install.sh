@@ -17,6 +17,9 @@ TEMP_DIR=$(mktemp -d)
 GITHUB_API_URL="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 GITHUB_REPO="MetaCubeX/mihomo"
 
+# 脚本本身路径（用于配置别名）
+SCRIPT_PATH="$(realpath "$0" 2>/dev/null || echo "$0")"
+
 # 清理临时文件
 cleanup() {
     rm -rf "$TEMP_DIR"
@@ -191,6 +194,106 @@ get_installed_version() {
     fi
 }
 
+# 解析实际用户（兼容通过 sudo 重执行的情况）
+effective_user() {
+    if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
+        echo "$SUDO_USER"
+    else
+        id -un
+    fi
+}
+
+# 实际用户的主目录（sudo 下也能得到正确路径）
+user_home() {
+    local u
+    u="$(effective_user)"
+
+    if [ "$u" = "$(id -un)" ] && [ "$(id -u)" -ne 0 ]; then
+        echo "$HOME"
+    else
+        dscl . -read "/Users/$u" NFSHomeDirectory 2>/dev/null | awk '/NFSHomeDirectory/{print $2; exit}'
+    fi
+}
+
+# 实际用户的 shell
+user_shell() {
+    local u
+    u="$(effective_user)"
+
+    if [ "$u" = "$(id -un)" ] && [ "$(id -u)" -ne 0 ]; then
+        echo "${SHELL:-/bin/bash}"
+    else
+        dscl . -read "/Users/$u" UserShell 2>/dev/null | awk '/UserShell/{print $2; exit}'
+    fi
+}
+
+# 定位实际 Shell 的 rc 配置文件（sudo 下仍指向用户自己的 rc）
+get_rc_file() {
+    case "$(basename "$(user_shell)")" in
+        bash)
+            echo "$(user_home)/.bashrc"
+            ;;
+        *)
+            echo "$(user_home)/.zshrc"
+            ;;
+    esac
+}
+
+# 从 rc 文件中移除 mi 别名相关行（marker + alias）
+remove_rc_alias_lines() {
+    local rc_file="$1"
+    [ -f "$rc_file" ] || return 0
+
+    awk '
+        /^# ===== Mihomo 安装器快捷命令 \(mi\) =====/ {inblock=1; next}
+        inblock {inblock=0; next}
+        /^alias mi=/{next}
+        {print}
+    ' "$rc_file" > "${rc_file}.tmp"
+    mv "${rc_file}.tmp" "$rc_file"
+}
+
+# 配置 mi 别名
+setup_mi_alias() {
+    local rc_file
+    rc_file="$(get_rc_file)"
+    local alias_line="alias mi='${SCRIPT_PATH}'"
+
+    # 已存在则无需重复
+    if [ -f "$rc_file" ] && grep -qF "$alias_line" "$rc_file"; then
+        log_info "别名已存在于 $rc_file: $alias_line"
+        return 0
+    fi
+
+    # 移除旧的 mi 别名（若路径变化），再追加
+    remove_rc_alias_lines "$rc_file"
+    {
+        echo "# ===== Mihomo 安装器快捷命令 (mi) ====="
+        echo "$alias_line"
+    } >> "$rc_file"
+
+    log_info "已写入别名到 $rc_file:"
+    log_info "  $alias_line"
+    log_info "生效方式：新终端，或执行: source $rc_file"
+}
+
+# 移除 mi 别名
+remove_mi_alias() {
+    local rc_file
+    rc_file="$(get_rc_file)"
+
+    unalias mi 2>/dev/null || true
+
+    if [ -f "$rc_file" ]; then
+        remove_rc_alias_lines "$rc_file"
+        log_info "已从 $rc_file 移除别名 'mi'"
+    else
+        log_warn "未找到 rc 配置文件: $rc_file"
+    fi
+
+    log_info "当前会话如需立即清除，请执行: unalias mi"
+}
+
 # 卸载 Mihomo
 uninstall_mihomo() {
     log_info "正在卸载 Mihomo..."
@@ -231,6 +334,43 @@ cleanup_script() {
     fi
 }
 
+# 这些动作需要写入 /usr/local/bin，必须 sudo
+need_sudo_for() {
+    case "$1" in
+        install|update|uninstall|purge)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# 非 root 且目标不可写时，自动用 sudo 重新执行（避免无限循环）
+maybe_sudo() {
+    local action="${1:-}"
+
+    # 已是 root -> 无需提升
+    if [ "$(id -u)" -eq 0 ]; then
+        return 0
+    fi
+
+    # 仅对需要写入 /usr/local/bin 的动作生效
+    if ! need_sudo_for "$action"; then
+        return 0
+    fi
+
+    # 若 /usr/local/bin 已可写，则无需 sudo
+    local target="/usr/local/bin"
+    [ -d "$target" ] || target="/usr/local"
+    if [ -w "$target" ]; then
+        return 0
+    fi
+
+    log_info "该操作需要 sudo 权限，正在通过 sudo 重新执行..."
+    exec sudo "$SCRIPT_PATH" "$@"
+}
+
 # 完全卸载（Mihomo + 脚本）
 purge_all() {
     log_info "开始完全卸载..."
@@ -243,6 +383,9 @@ main() {
     local action=${1:-install}
 
     check_platform
+
+    # 需要 sudo 时自动提升
+    maybe_sudo "$@"
 
     case "$action" in
         install)
@@ -272,6 +415,7 @@ main() {
 
             log_info "安装完成！"
             check_current_version
+            setup_mi_alias
             ;;
         update)
             log_info "开始更新..."
@@ -314,12 +458,15 @@ main() {
             ;;
         uninstall)
             uninstall_mihomo
+            remove_mi_alias
             ;;
         cleanup)
             cleanup_script
+            remove_mi_alias
             ;;
         purge)
             purge_all
+            remove_mi_alias
             ;;
         *)
             cat << EOF
@@ -336,6 +483,11 @@ Mihomo 安装/更新脚本
     cleanup    删除安装脚本
     purge      完全卸载（Mihomo + 脚本）
 
+特点:
+  · 安装后自动向 ~/.zshrc / ~/.bashrc 写入 mi 别名（新终端生效）
+  · 需要 sudo 的操作（install/update/uninstall/purge）会自动提升权限
+  · 卸载 / 清理 / 完全卸载会自动移除 mi 别名配置
+
 示例:
     mihomo-install install
     mihomo-install update
@@ -343,6 +495,9 @@ Mihomo 安装/更新脚本
     mihomo-install uninstall
     mihomo-install cleanup
     mihomo-install purge
+    # 安装后可直接用 mi 前缀（读操作无需 sudo）
+    mi version
+    mi update
 EOF
             exit 1
             ;;
