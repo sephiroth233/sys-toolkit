@@ -8,7 +8,6 @@
 - [系统备份恢复 (rclone)](#系统备份恢复-rclone)
 - [fail2ban 管理](#fail2ban-管理)
 - [Docker 安装](#docker-安装)
-- [Mihomo 安装 (macOS)](#mihomo-安装-macos)
 - [图床工具 (img)](#图床工具-img)
 
 ## 网络代理 (Sing-box)
@@ -58,31 +57,6 @@ sudo ./docker-install.sh
 ```
 
 要求：Linux（Ubuntu/Debian/CentOS/RHEL/Rocky/Alma/Fedora），root 权限。
-
-## Mihomo 安装 (macOS)
-
-macOS 上 Mihomo（Clash Meta 内核）的安装与更新。
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/sephiroth233/sys-toolkit/master/mihomo-install.sh -o mihomo-install.sh
-chmod +x mihomo-install.sh
-sudo ./mihomo-install.sh install
-```
-
-安装成功后会自动向 `~/.zshrc` / `~/.bashrc` 写入 `mi` 别名（新终端生效，当前终端可执行 `source ~/.zshrc`），之后所有操作直接用 `mi` 前缀：
-
-```bash
-mi install       # 安装（自动 sudo）
-mi update        # 更新（自动 sudo）
-mi version       # 查看当前版本
-mi uninstall     # 卸载（自动 sudo，同时移除别名配置）
-mi cleanup       # 删除安装脚本（同时移除别名配置）
-mi purge         # 完全卸载（自动 sudo，同时移除别名配置）
-```
-
-需要写入 `/usr/local/bin` 的操作会自动通过 sudo 提升权限；卸载 / 清理 / 完全卸载会自动移除 `mi` 别名配置。
-
-要求：macOS（Apple Silicon 或 Intel），sudo 权限。
 
 ## 图床工具 (img)
 
