@@ -641,9 +641,6 @@ build_client_uri() {
         http)
             echo "http://${http_username}:${http_password}@${host_ip}:${http_port}#${ip_country}-http"
             ;;
-        snell)
-            echo "snell://${snell_psk}@${host_ip}:${snell_port}?version=${snell_version:-5}#${ip_country}-snell"
-            ;;
         *)
             echo -e "${RED}错误: 未知的协议类型: ${type}${RESET}" >&2
             return 1
@@ -1065,15 +1062,18 @@ generate_client_config() {
             continue
         fi
 
+        echo -e "==== $(proto_display "$protocol") ====\n"
+        if [ "$protocol" == "snell" ]; then
+            echo -e "Surge/Clash 格式:\n${ip_country}-snell = snell, ${host_ip}, ${snell_port}, psk = ${snell_psk}, version = ${snell_version:-5}\n"
+            continue
+        fi
+
         local uri
         if ! uri=$(build_client_uri "$protocol"); then
             echo -e "${RED}错误: ${protocol} URI 生成失败${RESET}"
             continue
         fi
-        echo -e "==== $(proto_display "$protocol") ====\n${uri}\n"
-        if [ "$protocol" == "snell" ]; then
-            echo -e "Surge/Clash 格式:\n${ip_country}-snell = snell, ${host_ip}, ${snell_port}, psk = ${snell_psk}, version = ${snell_version:-5}\n"
-        fi
+        echo -e "${uri}\n"
     done
 }
 
